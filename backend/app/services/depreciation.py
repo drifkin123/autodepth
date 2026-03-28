@@ -310,15 +310,14 @@ def _build_summary(
 
 # ─── Main entry points ────────────────────────────────────────────────────────
 
-async def run_depreciation_model(
+async def compute_depreciation_result(
     session: AsyncSession,
     car: Car,
     reference_date: date | None = None,
 ) -> DepreciationResult:
     """
-    Fit the depreciation curve for a single car and persist predictions.
-
-    Deletes any existing predictions for this car+model_version before writing new ones.
+    Fit the depreciation curve and return results WITHOUT persisting predictions.
+    Use this for read-only API endpoints; use run_depreciation_model to also persist.
     """
     if reference_date is None:
         reference_date = date.today()
@@ -387,20 +386,9 @@ async def run_depreciation_model(
     residual_std = float(np.std(residuals))
 
     fit = FitResult(p0=float(p0_fit), lam=float(lam_fit), floor=float(c_fit), residual_std=residual_std)
-
     status, buy_window_date = _classify_buy_window(fit, current_t, reference_date)
     predictions = _build_predictions(car.id, fit, reference_date, current_t)
     summary = _build_summary(car, status, buy_window_date, fit)
-
-    # Persist: clear old predictions, insert new ones
-    await session.execute(
-        delete(PricePrediction).where(
-            PricePrediction.car_id == car.id,
-            PricePrediction.model_version == MODEL_VERSION,
-        )
-    )
-    session.add_all(predictions)
-    await session.commit()
 
     logger.info(
         "Car %s (%s %s %s): fit P0=%.0f λ=%.4f floor=%.0f status=%s",
@@ -415,6 +403,31 @@ async def run_depreciation_model(
         buy_window_date=buy_window_date,
         summary=summary,
     )
+
+
+async def run_depreciation_model(
+    session: AsyncSession,
+    car: Car,
+    reference_date: date | None = None,
+) -> DepreciationResult:
+    """
+    Fit the depreciation curve for a single car and persist predictions.
+
+    Deletes any existing predictions for this car+model_version before writing new ones.
+    """
+    result = await compute_depreciation_result(session, car, reference_date)
+
+    if result.predictions:
+        await session.execute(
+            delete(PricePrediction).where(
+                PricePrediction.car_id == car.id,
+                PricePrediction.model_version == MODEL_VERSION,
+            )
+        )
+        session.add_all(result.predictions)
+        await session.commit()
+
+    return result
 
 
 async def run_all_depreciation_models(session: AsyncSession) -> dict[str, str]:
