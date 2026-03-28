@@ -2,7 +2,7 @@
 
 ## What This App Is
 
-**AutoDepth** is a personal car market intelligence dashboard for enthusiasts tracking performance and exotic cars. It aggregates real auction sale data, models depreciation curves, and helps users decide *when* to buy the car they want at the best possible price.
+**AutoDepth** is a personal car market intelligence dashboard for enthusiasts tracking performance and exotic cars. It aggregates real vehicle sales data from auctions, dealerships, and listing platforms, models depreciation curves, and helps users decide *when* to buy the car they want at the best possible price.
 
 Target cars: Porsche, Ferrari, Lamborghini, McLaren, Audi (R8, RS models), Mercedes-AMG GT, Corvette C8 Z06, Lotus, and similar performance/exotic vehicles from the last 20 years.
 
@@ -65,7 +65,12 @@ autodepth/
 │   │   │   ├── depreciation.py
 │   │   │   └── scraper.py
 │   │   ├── scrapers/          ← per-source scrapers
-│   │   │   └── bring_a_trailer.py
+│   │   │   ├── base.py        ← shared scraper interface
+│   │   │   ├── bring_a_trailer.py
+│   │   │   ├── cars_and_bids.py
+│   │   │   ├── autotrader.py
+│   │   │   ├── cars_com.py
+│   │   │   └── rm_sothebys.py
 │   │   └── db.py
 │   ├── alembic/               ← DB migrations
 │   ├── pyproject.toml
@@ -94,17 +99,26 @@ cars (
   created_at TIMESTAMPTZ
 )
 
--- Individual auction sale records (TimescaleDB hypertable on sold_at)
-auction_sales (
+-- Individual vehicle sale/listing records (TimescaleDB hypertable on listed_at)
+vehicle_sales (
   id UUID PRIMARY KEY,
   car_id UUID REFERENCES cars(id),
-  source TEXT,         -- "bring_a_trailer", "cars_and_bids", "rm_sotheby"
+  source TEXT,         -- "bring_a_trailer", "cars_and_bids", "rm_sotheby",
+                       --   "autotrader", "cars_com",
+                       --   "dealer" (generic dealership), "private_seller"
   source_url TEXT,
-  year INT,            -- model year of the specific car sold
+  sale_type TEXT,      -- "auction", "listing", "dealer", "private"
+  year INT,            -- model year of the specific car sold/listed
   mileage INT,
   color TEXT,
-  sold_price INT,      -- in USD
-  sold_at TIMESTAMPTZ, -- partition key
+  asking_price INT,    -- original listed/asking price in USD (always present)
+  sold_price INT,      -- final confirmed sale price in USD (NULL if not sold)
+                       -- NOTE: asking vs sold can diverge significantly —
+                       -- use sold_price for depreciation modeling,
+                       -- asking_price only as a secondary market signal
+  is_sold BOOLEAN,     -- true = confirmed sale, false = active/expired listing
+  listed_at TIMESTAMPTZ,  -- partition key; when the listing appeared
+  sold_at TIMESTAMPTZ,    -- NULL if not a confirmed sale
   condition_notes TEXT,
   options JSONB,       -- e.g. {"pdk": true, "sport_chrono": true}
   raw_data JSONB       -- full scraped payload for reprocessing
@@ -140,7 +154,7 @@ watchlist_items (
 ```
 GET  /api/cars                          list all cars (filterable by make, model, year)
 GET  /api/cars/:id                      car detail + metadata
-GET  /api/cars/:id/sales                auction sales history (paginated, filterable)
+GET  /api/cars/:id/sales                vehicle sales/listings history (paginated, filterable by source, sale_type, is_sold)
 GET  /api/cars/:id/price-history        aggregated price over time (monthly avg)
 GET  /api/cars/:id/prediction           depreciation curve + buy window recommendation
 GET  /api/compare?ids=id1,id2,id3       compare multiple cars (price curves, stats)
@@ -166,7 +180,7 @@ All responses use camelCase JSON. Errors follow `{ error: string, detail?: strin
 - Price history chart (all auction results plotted, with trend line overlay)
 - Depreciation curve with forward prediction (confidence band shaded)
 - "Best time to buy" callout with plain-English explanation
-- Recent auction sales table (price, mileage, color, date, link to source)
+- Recent sales/listings table (price, mileage, color, source type, date, link to source)
 - Key insights panel: e.g. "This is a naturally aspirated Ferrari — values are rising, not falling"
 
 ### 3. Compare — `/compare`
@@ -186,7 +200,7 @@ All responses use camelCase JSON. Errors follow `{ error: string, detail?: strin
 
 Use a curve-fitting approach on the auction sales data:
 
-1. **Data prep**: filter sales by `car_id`, normalize mileage (use age if mileage unavailable), remove outliers (>2 std dev from monthly mean)
+1. **Data prep**: filter `vehicle_sales` by `car_id`; use `sold_price` (confirmed sales only) as the primary input for curve fitting; `asking_price` from listing sources can inform a separate "market ask" overlay but must never be mixed into the depreciation model directly — asking and sold prices diverge significantly and conflating them will skew the curve. Normalize mileage (use age if mileage unavailable), remove outliers (>2 std dev from monthly mean).
 2. **Curve fitting**: fit an exponential decay curve `P(t) = P0 * e^(-λt) + C` where C is the floor price
 3. **Floor detection**: C is estimated as a percentage of original MSRP, adjusted for:
    - Production scarcity (lower production count → higher floor)
@@ -199,15 +213,28 @@ Store predictions in `price_predictions` table. Re-run model nightly after scrap
 
 ---
 
-## Scraper (Python — `scrapers/bring_a_trailer.py`)
+## Scrapers (Python — `scrapers/`)
 
-- Use Playwright (async) to scrape completed auction results from Bring a Trailer
-- Target URL pattern: `bringatrailer.com/listing-results/?s={search_term}&sold=1`
-- Extract: final bid, year, mileage, title (parse make/model/trim), sold date, listing URL
-- Match to `cars` table via fuzzy make/model/trim matching
+All scrapers use Playwright (async), share a common base interface, and write into `vehicle_sales`. Each scraper is its own file under `scrapers/`.
+
+**Common contract for all scrapers:**
 - Deduplicate on `source_url` before inserting
+- Set `sale_type` and `is_sold` appropriately per source
+- Match to `cars` table via fuzzy make/model/trim matching
+- Log all scrape runs to a `scrape_logs` table (start time, source, records found, records inserted, errors)
 - Run on a schedule: nightly at 2am UTC via Railway cron job
-- Log all scrape runs to a `scrape_logs` table (start time, records found, records inserted, errors)
+
+**Sources (priority order):**
+
+| File | Source | Type | Notes |
+|---|---|---|---|
+| `bring_a_trailer.py` | Bring a Trailer | auction | Confirmed sales; target `bringatrailer.com/listing-results/?s={term}&sold=1` |
+| `cars_and_bids.py` | Cars & Bids | auction | Confirmed sales |
+| `autotrader.py` | AutoTrader | listing | Asking prices only; `sold_price=NULL`, `is_sold=false` |
+| `cars_com.py` | Cars.com | listing | Asking prices only; `sold_price=NULL`, `is_sold=false` |
+| `rm_sothebys.py` | RM Sotheby's | auction | High-end confirmed sales |
+
+**Extract fields (all sources):** price/bid, year, mileage, title (parse make/model/trim), date, listing URL, color (if available), condition notes (if available).
 
 ---
 
