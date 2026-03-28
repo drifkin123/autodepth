@@ -290,6 +290,15 @@ Populate `cars` table with these to start. Add more as needed.
 
 ---
 
+## Git Workflow
+
+- Work on a new branch for each build order step: `step/1-monorepo-setup`, `step/2-database-migrations`, etc.
+- When a step is complete and approved, commit with a conventional commit message summarizing what was built
+- Open a PR to main with a short description of the step and any decisions made
+- Do not move to the next step until the PR is merged or explicitly approved
+
+---
+
 ## Code Conventions
 
 - **Python**: type hints everywhere, async/await throughout, Pydantic v2 for request/response schemas
