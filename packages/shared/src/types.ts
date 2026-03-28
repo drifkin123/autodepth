@@ -21,7 +21,6 @@ export type SaleSource =
   | 'bring_a_trailer'
   | 'cars_and_bids'
   | 'rm_sotheby'
-  | 'autotrader'
   | 'cars_com'
   | 'dealer'
   | 'private_seller'

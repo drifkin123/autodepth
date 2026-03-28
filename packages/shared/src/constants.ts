@@ -77,22 +77,27 @@ export const SALE_SOURCES = [
   'bring_a_trailer',
   'cars_and_bids',
   'rm_sotheby',
-  'autotrader',
   'cars_com',
   'dealer',
   'private_seller',
 ] as const
 
-/** Sources that provide confirmed sold prices */
+/**
+ * Sources that provide confirmed hammer/sale prices.
+ * These are the primary input for the depreciation model.
+ */
 export const AUCTION_SOURCES = [
   'bring_a_trailer',
   'cars_and_bids',
   'rm_sotheby',
 ] as const
 
-/** Sources that provide asking/listing prices only */
+/**
+ * Sources that provide asking/listing prices only.
+ * Used as secondary market signal — never mixed into curve fitting.
+ * Note: AutoTrader excluded (Cloudflare-protected, not reliably scrapable).
+ */
 export const LISTING_SOURCES = [
-  'autotrader',
   'cars_com',
   'dealer',
   'private_seller',
