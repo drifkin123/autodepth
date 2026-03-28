@@ -68,7 +68,6 @@ autodepth/
 │   │   │   ├── base.py        ← shared scraper interface
 │   │   │   ├── bring_a_trailer.py
 │   │   │   ├── cars_and_bids.py
-│   │   │   ├── autotrader.py
 │   │   │   ├── cars_com.py
 │   │   │   └── rm_sothebys.py
 │   │   └── db.py
@@ -104,8 +103,7 @@ vehicle_sales (
   id UUID PRIMARY KEY,
   car_id UUID REFERENCES cars(id),
   source TEXT,         -- "bring_a_trailer", "cars_and_bids", "rm_sotheby",
-                       --   "autotrader", "cars_com",
-                       --   "dealer" (generic dealership), "private_seller"
+                       --   "cars_com", "dealer" (generic dealership), "private_seller"
   source_url TEXT,
   sale_type TEXT,      -- "auction", "listing", "dealer", "private"
   year INT,            -- model year of the specific car sold/listed
@@ -217,6 +215,11 @@ Store predictions in `price_predictions` table. Re-run model nightly after scrap
 
 All scrapers use Playwright (async), share a common base interface, and write into `vehicle_sales`. Each scraper is its own file under `scrapers/`.
 
+**Data hierarchy — important:**
+Confirmed auction sale prices are ground truth for the depreciation model. Dealer/listing asking prices are secondary signal only (never mixed into curve fitting). Prioritize auction sources.
+
+**Why no AutoTrader:** AutoTrader runs behind Cloudflare with aggressive bot detection. Scraping it reliably requires paid residential proxies and is not worth the fragility for data that is secondary signal anyway. **MarketCheck API was also evaluated and rejected** — it does not cover BaT/C&B/RM auction data at all, its "sold" data is just dealer listings going dark (no confirmed prices), and the free tier is limited to a 100-mile radius. Not suitable for national exotic car market tracking.
+
 **Common contract for all scrapers:**
 - Deduplicate on `source_url` before inserting
 - Set `sale_type` and `is_sold` appropriately per source
@@ -226,13 +229,12 @@ All scrapers use Playwright (async), share a common base interface, and write in
 
 **Sources (priority order):**
 
-| File | Source | Type | Notes |
+| File | Source | Type | Data value |
 |---|---|---|---|
-| `bring_a_trailer.py` | Bring a Trailer | auction | Confirmed sales; target `bringatrailer.com/listing-results/?s={term}&sold=1` |
-| `cars_and_bids.py` | Cars & Bids | auction | Confirmed sales |
-| `autotrader.py` | AutoTrader | listing | Asking prices only; `sold_price=NULL`, `is_sold=false` |
-| `cars_com.py` | Cars.com | listing | Asking prices only; `sold_price=NULL`, `is_sold=false` |
-| `rm_sothebys.py` | RM Sotheby's | auction | High-end confirmed sales |
+| `bring_a_trailer.py` | Bring a Trailer | auction | ⭐⭐⭐ Confirmed hammer prices — primary model input |
+| `cars_and_bids.py` | Cars & Bids | auction | ⭐⭐⭐ Confirmed hammer prices — primary model input |
+| `rm_sothebys.py` | RM Sotheby's | auction | ⭐⭐⭐ High-end confirmed sales — primary model input |
+| `cars_com.py` | Cars.com | listing | ⭐ Asking prices only; `sold_price=NULL`, `is_sold=false`; secondary signal |
 
 **Extract fields (all sources):** price/bid, year, mileage, title (parse make/model/trim), date, listing URL, color (if available), condition notes (if available).
 
