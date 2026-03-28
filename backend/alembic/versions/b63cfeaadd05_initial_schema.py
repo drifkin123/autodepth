@@ -44,9 +44,14 @@ def upgrade() -> None:
     )
 
     # ── vehicle_sales (TimescaleDB hypertable partitioned on listed_at) ───────
+    # TimescaleDB requires the partition column (listed_at) to be part of the
+    # primary key. Composite PK (id, listed_at) satisfies this while keeping id
+    # as the natural identifier. source_url uniqueness is enforced in scraper
+    # code (SELECT before INSERT) rather than a DB unique index, because
+    # TimescaleDB unique indexes must also include the partition column.
     op.create_table(
         "vehicle_sales",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
             "car_id",
             postgresql.UUID(as_uuid=True),
@@ -54,7 +59,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("source", sa.Text, nullable=False),
-        sa.Column("source_url", sa.Text, nullable=False, unique=True),
+        sa.Column("source_url", sa.Text, nullable=False),
         sa.Column("sale_type", sa.Text, nullable=False),
         sa.Column("year", sa.Integer, nullable=False),
         sa.Column("mileage", sa.Integer, nullable=True),
@@ -77,10 +82,12 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'{}'::jsonb"),
         ),
+        sa.PrimaryKeyConstraint("id", "listed_at"),
     )
     op.create_index("ix_vehicle_sales_car_id", "vehicle_sales", ["car_id"])
     op.create_index("ix_vehicle_sales_listed_at", "vehicle_sales", ["listed_at"])
     op.create_index("ix_vehicle_sales_is_sold", "vehicle_sales", ["is_sold"])
+    op.create_index("ix_vehicle_sales_source_url", "vehicle_sales", ["source_url"])
 
     # Convert to TimescaleDB hypertable (partition by listed_at, monthly chunks)
     op.execute(
