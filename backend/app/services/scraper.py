@@ -1,10 +1,16 @@
 """Scraper runner — runs all configured scrapers in sequence."""
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.scrapers.bring_a_trailer import BringATrailerScraper
+
+if TYPE_CHECKING:
+    from app.broadcast import ScrapeBroadcaster
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +20,10 @@ SCRAPERS = [
 ]
 
 
-async def run_all_scrapers(session: AsyncSession) -> dict[str, tuple[int, int]]:
+async def run_all_scrapers(
+    session: AsyncSession,
+    broadcaster: "ScrapeBroadcaster | None" = None,
+) -> dict[str, tuple[int, int]]:
     """
     Run every configured scraper and return a summary dict:
         { source_name: (records_found, records_inserted) }
@@ -22,7 +31,7 @@ async def run_all_scrapers(session: AsyncSession) -> dict[str, tuple[int, int]]:
     results: dict[str, tuple[int, int]] = {}
 
     for ScraperClass in SCRAPERS:
-        scraper = ScraperClass(session)
+        scraper = ScraperClass(session, broadcaster)
         logger.info("Starting scraper: %s", scraper.source)
         try:
             found, inserted = await scraper.run()

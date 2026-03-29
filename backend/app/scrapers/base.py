@@ -4,6 +4,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz, process
 from sqlalchemy import select
@@ -12,6 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.car import Car
 from app.models.scrape_log import ScrapeLog
 from app.models.vehicle_sale import VehicleSale
+
+if TYPE_CHECKING:
+    from app.broadcast import ScrapeBroadcaster
 
 
 @dataclass
@@ -40,9 +44,25 @@ class BaseScraper(ABC):
 
     source: str  # must be set by subclass
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        broadcaster: "ScrapeBroadcaster | None" = None,
+    ) -> None:
         self.session = session
+        self.broadcaster = broadcaster
         self._car_cache: list[Car] | None = None
+
+    async def _emit(
+        self, event_type: str, message: str, data: dict | None = None
+    ) -> None:
+        """Publish a scrape event if a broadcaster is attached."""
+        if self.broadcaster is None:
+            return
+        from app.broadcast import ScrapeEvent
+        await self.broadcaster.publish(
+            ScrapeEvent(type=event_type, source=self.source, message=message, data=data or {})
+        )
 
     async def _load_cars(self) -> list[Car]:
         if self._car_cache is None:
@@ -123,17 +143,32 @@ class BaseScraper(ABC):
         records_inserted = 0
         error: str | None = None
 
+        await self._emit("start", f"Starting scraper: {self.source}")
+
         try:
             listings = await self.scrape()
             records_found = len(listings)
-            for listing in listings:
+            await self._emit(
+                "progress",
+                f"Fetched {records_found} listings — saving to DB…",
+                {"records_found": records_found},
+            )
+            for i, listing in enumerate(listings, 1):
                 inserted = await self.save_listing(listing)
                 if inserted:
                     records_inserted += 1
+                # Emit progress every 25 saves so the dashboard feels alive
+                if i % 25 == 0:
+                    await self._emit(
+                        "progress",
+                        f"Saved {i}/{records_found} listings ({records_inserted} new)…",
+                        {"saved": i, "total": records_found, "inserted": records_inserted},
+                    )
             await self.session.commit()
         except Exception as exc:
             await self.session.rollback()
             error = str(exc)
+            await self._emit("error", f"Scraper failed: {exc}", {"error": error})
             raise
         finally:
             log.finished_at = datetime.utcnow()
@@ -143,6 +178,11 @@ class BaseScraper(ABC):
             await self.session.merge(log)
             await self.session.commit()
 
+        await self._emit(
+            "complete",
+            f"Done: {records_found} found, {records_inserted} new records inserted.",
+            {"records_found": records_found, "records_inserted": records_inserted},
+        )
         return records_found, records_inserted
 
     @abstractmethod
