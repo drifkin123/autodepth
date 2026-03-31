@@ -17,7 +17,8 @@ from app.db import async_session_factory, get_db
 from app.models.car import Car
 from app.models.scrape_log import ScrapeLog
 from app.models.vehicle_sale import VehicleSale
-from app.scrapers.bring_a_trailer import get_url_entries
+from app.scrapers.bring_a_trailer import get_url_entries as get_bat_url_entries
+from app.scrapers.cars_com import get_url_entries as get_cars_com_url_entries
 from app.services.depreciation import run_all_depreciation_models
 from app.services.scraper import run_all_scrapers
 from app.settings import settings
@@ -72,8 +73,16 @@ class BatUrlEntry(BaseModel):
     path: str
 
 
+class CarsComUrlEntry(BaseModel):
+    key: str
+    label: str
+    make: str
+    model: str
+
+
 class TriggerRequest(BaseModel):
     bat_selected_keys: list[str] | None = None
+    cars_com_selected_keys: list[str] | None = None
 
 
 class SaleOut(BaseModel):
@@ -107,7 +116,10 @@ class PaginatedSales(BaseModel):
 # Background task: full scrape + depreciation refresh
 # ---------------------------------------------------------------------------
 
-async def _run_scrape_job(bat_selected_keys: set[str] | None = None) -> None:
+async def _run_scrape_job(
+    bat_selected_keys: set[str] | None = None,
+    cars_com_selected_keys: set[str] | None = None,
+) -> None:
     """Run scrapers + depreciation model as a background task with event streaming."""
     broadcaster.is_running = True
     cancel_event = broadcaster.new_cancel_event()
@@ -120,6 +132,7 @@ async def _run_scrape_job(bat_selected_keys: set[str] | None = None) -> None:
                 session,
                 broadcaster,
                 bat_selected_keys=bat_selected_keys,
+                cars_com_selected_keys=cars_com_selected_keys,
                 cancel_event=cancel_event,
             )
 
@@ -173,7 +186,13 @@ async def _run_scrape_job(bat_selected_keys: set[str] | None = None) -> None:
 @router.get("/scrapers/bat/urls", response_model=list[BatUrlEntry])
 async def bat_url_list(_token: str = Depends(require_admin)) -> list[BatUrlEntry]:
     """Return the full list of Bring a Trailer car URL entries."""
-    return [BatUrlEntry(**e) for e in get_url_entries()]
+    return [BatUrlEntry(**e) for e in get_bat_url_entries()]
+
+
+@router.get("/scrapers/cars_com/urls", response_model=list[CarsComUrlEntry])
+async def cars_com_url_list(_token: str = Depends(require_admin)) -> list[CarsComUrlEntry]:
+    """Return the full list of Cars.com search URL entries."""
+    return [CarsComUrlEntry(**e) for e in get_cars_com_url_entries()]
 
 
 @router.post("/scrape/trigger", status_code=status.HTTP_202_ACCEPTED)
@@ -185,8 +204,11 @@ async def trigger_scrape(
     """Kick off a scrape + depreciation refresh in the background."""
     if broadcaster.is_running:
         raise HTTPException(status_code=409, detail="A scrape is already running.")
-    selected = set(body.bat_selected_keys) if body and body.bat_selected_keys else None
-    background_tasks.add_task(_run_scrape_job, bat_selected_keys=selected)
+    bat_keys = set(body.bat_selected_keys) if body and body.bat_selected_keys is not None else None
+    cc_keys = set(body.cars_com_selected_keys) if body and body.cars_com_selected_keys is not None else None
+    background_tasks.add_task(
+        _run_scrape_job, bat_selected_keys=bat_keys, cars_com_selected_keys=cc_keys,
+    )
     return {"message": "Scrape started. Connect to /api/admin/ws/stream to follow progress."}
 
 
@@ -483,7 +505,8 @@ _DASHBOARD_HTML = """\
     .panel-header .hint { font-size: 11px; color: var(--muted); }
 
     /* ── Car selector ── */
-    .car-selector { max-height: 520px; overflow-y: auto; }
+    .selector-stack { display: flex; flex-direction: column; gap: 16px; }
+    .car-selector { max-height: 300px; overflow-y: auto; }
     .car-selector-controls {
       padding: 10px 16px; border-bottom: 1px solid var(--border);
       display: flex; gap: 8px; align-items: center;
@@ -653,18 +676,35 @@ _DASHBOARD_HTML = """\
       </div>
 
       <div class="grid-main">
-        <div class="panel">
-          <div class="panel-header">
-            <h2>Bring a Trailer</h2>
-            <span class="hint">Car pages</span>
+        <div class="selector-stack">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Bring a Trailer</h2>
+              <span class="hint">Car pages</span>
+            </div>
+            <div class="car-selector-controls">
+              <button class="btn-secondary" onclick="toggleAll('bat', true)">All</button>
+              <button class="btn-secondary" onclick="toggleAll('bat', false)">None</button>
+              <span class="count" id="bat-car-count">0 / 0</span>
+            </div>
+            <div class="car-selector" id="bat-car-selector">
+              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
+            </div>
           </div>
-          <div class="car-selector-controls">
-            <button class="btn-secondary" onclick="toggleAll(true)">All</button>
-            <button class="btn-secondary" onclick="toggleAll(false)">None</button>
-            <span class="count" id="car-count">0 / 0</span>
-          </div>
-          <div class="car-selector" id="car-selector">
-            <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Cars.com</h2>
+              <span class="hint">Search pages</span>
+            </div>
+            <div class="car-selector-controls">
+              <button class="btn-secondary" onclick="toggleAll('cc', true)">All</button>
+              <button class="btn-secondary" onclick="toggleAll('cc', false)">None</button>
+              <span class="count" id="cc-car-count">0 / 0</span>
+            </div>
+            <div class="car-selector" id="cc-car-selector">
+              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
+            </div>
           </div>
         </div>
 
@@ -778,6 +818,7 @@ _DASHBOARD_HTML = """\
   let ws = null;
   let logEmpty = true;
   let batUrls = [];
+  let carsComUrls = [];
   let listingsCurrentPage = 1;
   let listingsTotal = 0;
   const LISTINGS_PAGE_SIZE = 50;
@@ -814,7 +855,7 @@ _DASHBOARD_HTML = """\
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function initDashboard() {
-    await Promise.all([loadLogs(), loadBatUrls()]);
+    await Promise.all([loadLogs(), loadBatUrls(), loadCarsComUrls()]);
     connectWebSocket();
     setInterval(pollStatus, 3000);
     pollStatus();
@@ -849,55 +890,66 @@ _DASHBOARD_HTML = """\
     }
   }
 
-  // ── Car selector ─────────────────────────────────────────────────────────
+  // ── Car selectors ────────────────────────────────────────────────────────
   async function loadBatUrls() {
     try {
       const res = await fetch(`/api/admin/scrapers/bat/urls?token=${encodeURIComponent(TOKEN)}`);
       if (!res.ok) return;
       batUrls = await res.json();
-      renderCarSelector();
+      renderSelector('bat', batUrls);
     } catch (_) {}
   }
 
-  function renderCarSelector() {
-    const container = document.getElementById('car-selector');
+  async function loadCarsComUrls() {
+    try {
+      const res = await fetch(`/api/admin/scrapers/cars_com/urls?token=${encodeURIComponent(TOKEN)}`);
+      if (!res.ok) return;
+      carsComUrls = await res.json();
+      renderSelector('cc', carsComUrls);
+    } catch (_) {}
+  }
+
+  function renderSelector(prefix, entries) {
+    const container = document.getElementById(prefix + '-car-selector');
     let currentMake = '';
     let html = '<div class="car-list">';
-    for (const entry of batUrls) {
+    for (const entry of entries) {
       const make = entry.label.split(' ')[0];
       if (make !== currentMake) {
         currentMake = make;
         html += `<div class="car-group-label">${escHtml(make)}</div>`;
       }
-      html += `<div class="car-item" onclick="toggleCar('${entry.key}')">
-        <input type="checkbox" id="car-${entry.key}" checked data-key="${entry.key}">
-        <label for="car-${entry.key}">${escHtml(entry.label)}</label>
+      const id = prefix + '-' + entry.key;
+      html += `<div class="car-item" onclick="toggleCar('${id}')">
+        <input type="checkbox" id="${id}" checked data-key="${entry.key}" data-prefix="${prefix}">
+        <label for="${id}">${escHtml(entry.label)}</label>
       </div>`;
     }
     html += '</div>';
     container.innerHTML = html;
-    updateCarCount();
+    updateCarCount(prefix);
   }
 
-  function toggleCar(key) {
-    const cb = document.getElementById('car-' + key);
+  function toggleCar(id) {
+    const cb = document.getElementById(id);
     cb.checked = !cb.checked;
-    updateCarCount();
+    updateCarCount(cb.dataset.prefix);
   }
 
-  function toggleAll(state) {
-    document.querySelectorAll('.car-selector input[type=checkbox]').forEach(cb => cb.checked = state);
-    updateCarCount();
+  function toggleAll(prefix, state) {
+    document.querySelectorAll('#' + prefix + '-car-selector input[type=checkbox]').forEach(cb => cb.checked = state);
+    updateCarCount(prefix);
   }
 
-  function updateCarCount() {
-    const all = document.querySelectorAll('.car-selector input[type=checkbox]');
-    const checked = document.querySelectorAll('.car-selector input[type=checkbox]:checked');
-    document.getElementById('car-count').textContent = `${checked.length} / ${all.length}`;
+  function updateCarCount(prefix) {
+    const sel = '#' + prefix + '-car-selector input[type=checkbox]';
+    const all = document.querySelectorAll(sel);
+    const checked = document.querySelectorAll(sel + ':checked');
+    document.getElementById(prefix + '-car-count').textContent = `${checked.length} / ${all.length}`;
   }
 
-  function getSelectedKeys() {
-    const checked = document.querySelectorAll('.car-selector input[type=checkbox]:checked');
+  function getSelectedKeys(prefix) {
+    const checked = document.querySelectorAll('#' + prefix + '-car-selector input[type=checkbox]:checked');
     return Array.from(checked).map(cb => cb.dataset.key);
   }
 
@@ -1048,15 +1100,19 @@ _DASHBOARD_HTML = """\
 
   // ── Actions ──────────────────────────────────────────────────────────────────
   async function triggerScrape() {
-    const selectedKeys = getSelectedKeys();
-    if (selectedKeys.length === 0) {
+    const batKeys = getSelectedKeys('bat');
+    const ccKeys = getSelectedKeys('cc');
+    if (batKeys.length === 0 && ccKeys.length === 0) {
       alert('Select at least one car page to scrape.');
       return;
     }
     clearFeed();
-    // If all are selected, pass null (scrape all) — otherwise pass the subset
-    const allSelected = selectedKeys.length === batUrls.length;
-    const body = allSelected ? {} : { bat_selected_keys: selectedKeys };
+    // null = scrape all for that source; explicit list = subset; empty list = skip source
+    const body = {};
+    if (batKeys.length === 0) body.bat_selected_keys = [];
+    else if (batKeys.length < batUrls.length) body.bat_selected_keys = batKeys;
+    if (ccKeys.length === 0) body.cars_com_selected_keys = [];
+    else if (ccKeys.length < carsComUrls.length) body.cars_com_selected_keys = ccKeys;
     try {
       const res = await fetch(`/api/admin/scrape/trigger?token=${encodeURIComponent(TOKEN)}`, {
         method: 'POST',

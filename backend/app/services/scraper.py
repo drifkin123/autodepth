@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.scrapers.bring_a_trailer import BringATrailerScraper
+from app.scrapers.cars_com import CarsComScraper
 
 if TYPE_CHECKING:
     from app.broadcast import ScrapeBroadcaster
@@ -21,6 +22,7 @@ async def run_all_scrapers(
     broadcaster: "ScrapeBroadcaster | None" = None,
     *,
     bat_selected_keys: set[str] | None = None,
+    cars_com_selected_keys: set[str] | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> dict[str, tuple[int, int]]:
     """
@@ -30,6 +32,8 @@ async def run_all_scrapers(
     Parameters:
         bat_selected_keys: If provided, only scrape these BaT URL keys.
                            None means scrape all.
+        cars_com_selected_keys: If provided, only scrape these Cars.com URL keys.
+                                None means scrape all.
         cancel_event: If set, scrapers check this to stop early.
     """
     results: dict[str, tuple[int, int]] = {}
@@ -54,6 +58,28 @@ async def run_all_scrapers(
     except Exception:
         logger.exception("Scraper %s failed", scraper.source)
         results[scraper.source] = (-1, -1)
+
+    # ── Cars.com ──────────────────────────────────────────────────────────
+    if not (cancel_event and cancel_event.is_set()):
+        scraper_cc = CarsComScraper(
+            session,
+            broadcaster,
+            selected_keys=cars_com_selected_keys,
+            cancel_event=cancel_event,
+        )
+        logger.info("Starting scraper: %s", scraper_cc.source)
+        try:
+            found, inserted = await scraper_cc.run()
+            results[scraper_cc.source] = (found, inserted)
+            logger.info(
+                "Scraper %s complete: %d found, %d inserted",
+                scraper_cc.source,
+                found,
+                inserted,
+            )
+        except Exception:
+            logger.exception("Scraper %s failed", scraper_cc.source)
+            results[scraper_cc.source] = (-1, -1)
 
     # Add future scrapers here with their own source-specific options.
 
