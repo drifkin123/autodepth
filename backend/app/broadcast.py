@@ -33,6 +33,7 @@ class ScrapeBroadcaster:
     def __init__(self) -> None:
         self._queues: list[asyncio.Queue[ScrapeEvent | None]] = []
         self.is_running: bool = False
+        self._cancel_event: asyncio.Event | None = None
 
     def subscribe(self) -> asyncio.Queue[ScrapeEvent | None]:
         """Return a new queue that will receive all published events."""
@@ -54,6 +55,20 @@ class ScrapeBroadcaster:
         """Push a sentinel None to tell subscribers the stream is finished."""
         for q in self._queues:
             await q.put(None)
+
+    def request_cancel(self) -> None:
+        """Signal the running scrape to stop after the current URL."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+
+    def new_cancel_event(self) -> asyncio.Event:
+        """Create a fresh cancellation event for a new scrape run."""
+        self._cancel_event = asyncio.Event()
+        return self._cancel_event
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancel_event is not None and self._cancel_event.is_set()
 
 
 # Module-level singleton — imported by scrapers and admin routes.
