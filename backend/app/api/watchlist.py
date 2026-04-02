@@ -1,6 +1,7 @@
 """Watchlist routes — all require authentication."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import date, datetime
 
@@ -15,6 +16,8 @@ from app.db import get_db
 from app.models.car import Car
 from app.models.watchlist import WatchlistItem
 from app.services.depreciation import compute_depreciation_result
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/watchlist", tags=["watchlist"])
 
@@ -115,16 +118,20 @@ async def add_to_watchlist(
     if existing is not None:
         raise HTTPException(status_code=409, detail="Car already in watchlist")
 
-    item = WatchlistItem(
-        id=uuid.uuid4(),
-        user_id=user_id,
-        car_id=body.car_id,
-        target_price=body.target_price,
-        notes=body.notes,
-    )
-    db.add(item)
-    await db.commit()
-    await db.refresh(item)
+    try:
+        item = WatchlistItem(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            car_id=body.car_id,
+            target_price=body.target_price,
+            notes=body.notes,
+        )
+        db.add(item)
+        await db.commit()
+        await db.refresh(item)
+    except Exception as exc:
+        logger.exception("Failed to add watchlist item")
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from exc
     return WatchlistItemOut.model_validate(item)
 
 
@@ -137,5 +144,9 @@ async def remove_from_watchlist(
     item = await db.get(WatchlistItem, item_id)
     if item is None or item.user_id != user_id:
         raise HTTPException(status_code=404, detail="Watchlist item not found")
-    await db.delete(item)
-    await db.commit()
+    try:
+        await db.delete(item)
+        await db.commit()
+    except Exception as exc:
+        logger.exception("Failed to delete watchlist item")
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}") from exc
