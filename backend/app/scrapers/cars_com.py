@@ -15,12 +15,9 @@ from app.scrapers.cars_com_parser import (
     BASE_URL,
     SOURCE,
     extract_listings_from_html,
+    extract_page_meta,
     has_next_page,
-    parse_color,
     parse_listing,
-    parse_mileage,
-    parse_price,
-    parse_year,
 )
 
 # ---------------------------------------------------------------------------
