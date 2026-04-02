@@ -13,19 +13,21 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from app.scrapers.bring_a_trailer import (
-    BAT_URLS,
-    BASE_URL,
-    BringATrailerScraper,
+from app.scrapers.bat_parser import (
     extract_items_from_html,
-    fetch_page,
-    get_all_url_keys,
-    get_url_entries,
     parse_color,
     parse_item,
     parse_mileage,
     parse_sold_text,
     parse_year,
+)
+from app.scrapers.bring_a_trailer import (
+    BAT_URLS,
+    BASE_URL,
+    BringATrailerScraper,
+    fetch_page,
+    get_all_url_keys,
+    get_url_entries,
 )
 
 

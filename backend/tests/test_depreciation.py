@@ -16,16 +16,16 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from app.services.depreciation import (
+from app.services.depreciation import _build_summary
+from app.services.depreciation_curve import (
     BASE_FLOOR_FRACTION,
     FitResult,
     NA_FLOOR_PREMIUM,
-    _build_summary,
-    _classify_buy_window,
-    _estimate_floor,
-    _exp_decay,
-    _months_since_year_start,
-    _prepare_data,
+    classify_buy_window as _classify_buy_window,
+    estimate_floor as _estimate_floor,
+    exp_decay as _exp_decay,
+    months_since_year_start as _months_since_year_start,
+    prepare_data as _prepare_data,
 )
 
 

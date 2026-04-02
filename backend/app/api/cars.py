@@ -1,6 +1,7 @@
 """Car catalog routes."""
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 
@@ -13,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.car import Car
 from app.models.vehicle_sale import VehicleSale
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cars", tags=["cars"])
 
@@ -89,14 +92,18 @@ async def list_cars(
     model: str | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> list[CarOut]:
-    stmt = select(Car)
-    if make:
-        stmt = stmt.where(Car.make.ilike(f"%{make}%"))
-    if model:
-        stmt = stmt.where(Car.model.ilike(f"%{model}%"))
-    stmt = stmt.order_by(Car.make, Car.model, Car.trim, Car.year_start)
-    result = await db.execute(stmt)
-    return [CarOut.model_validate(c) for c in result.scalars().all()]
+    try:
+        stmt = select(Car)
+        if make:
+            stmt = stmt.where(Car.make.ilike(f"%{make}%"))
+        if model:
+            stmt = stmt.where(Car.model.ilike(f"%{model}%"))
+        stmt = stmt.order_by(Car.make, Car.model, Car.trim, Car.year_start)
+        result = await db.execute(stmt)
+        return [CarOut.model_validate(c) for c in result.scalars().all()]
+    except Exception as exc:
+        logger.exception("Failed to list cars")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {exc}") from exc
 
 
 @router.get("/{car_id}", response_model=CarOut)
@@ -121,19 +128,23 @@ async def get_car_sales(
     if car is None:
         raise HTTPException(status_code=404, detail="Car not found")
 
-    stmt = select(VehicleSale).where(VehicleSale.car_id == car_id)
-    if source:
-        stmt = stmt.where(VehicleSale.source == source)
-    if sale_type:
-        stmt = stmt.where(VehicleSale.sale_type == sale_type)
-    if is_sold is not None:
-        stmt = stmt.where(VehicleSale.is_sold == is_sold)
+    try:
+        stmt = select(VehicleSale).where(VehicleSale.car_id == car_id)
+        if source:
+            stmt = stmt.where(VehicleSale.source == source)
+        if sale_type:
+            stmt = stmt.where(VehicleSale.sale_type == sale_type)
+        if is_sold is not None:
+            stmt = stmt.where(VehicleSale.is_sold == is_sold)
 
-    count_result = await db.execute(select(func.count()).select_from(stmt.subquery()))
-    total = count_result.scalar_one()
+        count_result = await db.execute(select(func.count()).select_from(stmt.subquery()))
+        total = count_result.scalar_one()
 
-    stmt = stmt.order_by(VehicleSale.listed_at.desc()).offset((page - 1) * page_size).limit(page_size)
-    sales = (await db.execute(stmt)).scalars().all()
+        stmt = stmt.order_by(VehicleSale.listed_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        sales = (await db.execute(stmt)).scalars().all()
+    except Exception as exc:
+        logger.exception("Failed to query car sales")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {exc}") from exc
 
     return CarSalesResponse(
         car=CarOut.model_validate(car),
@@ -155,38 +166,31 @@ async def get_price_history(
     if car is None:
         raise HTTPException(status_code=404, detail="Car not found")
 
-    rows = (
-        await db.execute(
+    sold_price_avg = func.avg(case(
+        (VehicleSale.is_sold.is_(True), VehicleSale.sold_price.cast(Float)), else_=None,
+    ))
+    sold_count_expr = func.count(case((VehicleSale.is_sold.is_(True), 1), else_=None))
+    try:
+        rows = (await db.execute(
             select(
                 extract("year", VehicleSale.listed_at).label("yr"),
                 extract("month", VehicleSale.listed_at).label("mo"),
-                func.avg(
-                    case(
-                        (VehicleSale.is_sold.is_(True), VehicleSale.sold_price.cast(Float)),
-                        else_=None,
-                    )
-                ).label("avg_sold"),
+                sold_price_avg.label("avg_sold"),
                 func.avg(VehicleSale.asking_price.cast(Float)).label("avg_asking"),
-                func.count(
-                    case((VehicleSale.is_sold.is_(True), 1), else_=None)
-                ).label("sold_count"),
+                sold_count_expr.label("sold_count"),
                 func.count().label("listing_count"),
-            )
-            .where(VehicleSale.car_id == car_id)
-            .group_by("yr", "mo")
-            .order_by("yr", "mo")
-        )
-    ).all()
+            ).where(VehicleSale.car_id == car_id).group_by("yr", "mo").order_by("yr", "mo")
+        )).all()
+    except Exception as exc:
+        logger.exception("Failed to query price history")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {exc}") from exc
 
     price_history = [
         PricePoint(
-            date=f"{int(row.yr)}-{int(row.mo):02d}",
-            avg_sold_price=float(row.avg_sold) if row.avg_sold is not None else None,
-            avg_asking_price=float(row.avg_asking) if row.avg_asking is not None else None,
-            sold_count=int(row.sold_count),
-            listing_count=int(row.listing_count),
-        )
-        for row in rows
+            date=f"{int(r.yr)}-{int(r.mo):02d}",
+            avg_sold_price=float(r.avg_sold) if r.avg_sold is not None else None,
+            avg_asking_price=float(r.avg_asking) if r.avg_asking is not None else None,
+            sold_count=int(r.sold_count), listing_count=int(r.listing_count),
+        ) for r in rows
     ]
-
     return PriceHistoryResponse(car=CarOut.model_validate(car), price_history=price_history)

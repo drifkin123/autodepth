@@ -12,13 +12,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.scrapers.cars_com import (
-    BASE_URL,
     CARS_COM_URLS,
     CarsComScraper,
     build_search_url,
-    extract_listings_from_html,
     get_all_url_keys,
     get_url_entries,
+)
+from app.scrapers.cars_com_parser import (
+    BASE_URL,
+    extract_listings_from_html,
     has_next_page,
     parse_color,
     parse_listing,
