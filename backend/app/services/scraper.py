@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.scrapers.bring_a_trailer import BringATrailerScraper
+from app.scrapers.cars_and_bids import CarsAndBidsScraper
 from app.scrapers.cars_com import CarsComScraper
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ async def run_all_scrapers(
     *,
     bat_selected_keys: set[str] | None = None,
     cars_com_selected_keys: set[str] | None = None,
+    carsandbids_selected_keys: set[str] | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> dict[str, tuple[int, int]]:
     """
@@ -77,6 +79,28 @@ async def run_all_scrapers(
             logger.exception("Scraper %s failed", scraper_cc.source)
             results[scraper_cc.source] = (-1, -1)
 
+    # ── Cars & Bids ───────────────────────────────────────────────────────
+    if not (cancel_event and cancel_event.is_set()):
+        scraper_cab = CarsAndBidsScraper(
+            session,
+            broadcaster,
+            selected_keys=carsandbids_selected_keys,
+            cancel_event=cancel_event,
+        )
+        logger.info("Starting scraper: %s", scraper_cab.source)
+        try:
+            found, inserted = await scraper_cab.run()
+            results[scraper_cab.source] = (found, inserted)
+            logger.info(
+                "Scraper %s complete: %d found, %d inserted",
+                scraper_cab.source,
+                found,
+                inserted,
+            )
+        except Exception:
+            logger.exception("Scraper %s failed", scraper_cab.source)
+            results[scraper_cab.source] = (-1, -1)
+
     return results
 
 
@@ -86,6 +110,7 @@ async def run_scrape_job(
     *,
     bat_selected_keys: set[str] | None = None,
     cars_com_selected_keys: set[str] | None = None,
+    carsandbids_selected_keys: set[str] | None = None,
 ) -> None:
     """Run scrapers + depreciation model as a background task with event streaming."""
     from app.broadcast import ScrapeEvent
@@ -103,6 +128,7 @@ async def run_scrape_job(
                 broadcaster,
                 bat_selected_keys=bat_selected_keys,
                 cars_com_selected_keys=cars_com_selected_keys,
+                carsandbids_selected_keys=carsandbids_selected_keys,
                 cancel_event=cancel_event,
             )
 

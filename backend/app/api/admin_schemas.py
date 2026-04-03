@@ -42,9 +42,16 @@ class CarsComUrlEntry(BaseModel):
     model: str
 
 
+class CarsAndBidsUrlEntry(BaseModel):
+    key: str
+    label: str
+    query: str
+
+
 class TriggerRequest(BaseModel):
     bat_selected_keys: list[str] | None = None
     cars_com_selected_keys: list[str] | None = None
+    carsandbids_selected_keys: list[str] | None = None
 
 
 class SaleOut(BaseModel):

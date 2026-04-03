@@ -13,12 +13,13 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin_schemas import (
-    BatUrlEntry, CarsComUrlEntry, PaginatedSales, SaleOut,
+    BatUrlEntry, CarsAndBidsUrlEntry, CarsComUrlEntry, PaginatedSales, SaleOut,
     ScrapeLogOut, ScraperStatus, TriggerRequest,
 )
 from app.broadcast import broadcaster
 from app.db import async_session_factory, get_db
 from app.scrapers.bring_a_trailer import get_url_entries as get_bat_url_entries
+from app.scrapers.cars_and_bids import get_url_entries as get_cars_and_bids_url_entries
 from app.scrapers.cars_com import get_url_entries as get_cars_com_url_entries
 from app.services.admin_queries import query_paginated_sales, query_scrape_logs
 from app.services.scraper import run_depreciation_job, run_scrape_job
@@ -51,6 +52,13 @@ async def cars_com_url_list(_token: str = Depends(require_admin)) -> list[CarsCo
     return [CarsComUrlEntry(**e) for e in get_cars_com_url_entries()]
 
 
+@router.get("/scrapers/cars_and_bids/urls", response_model=list[CarsAndBidsUrlEntry])
+async def cars_and_bids_url_list(
+    _token: str = Depends(require_admin),
+) -> list[CarsAndBidsUrlEntry]:
+    return [CarsAndBidsUrlEntry(**e) for e in get_cars_and_bids_url_entries()]
+
+
 @router.post("/scrape/trigger", status_code=status.HTTP_202_ACCEPTED)
 async def trigger_scrape(
     background_tasks: BackgroundTasks,
@@ -61,9 +69,12 @@ async def trigger_scrape(
         raise HTTPException(status_code=409, detail="A scrape is already running.")
     bat_keys = set(body.bat_selected_keys) if body and body.bat_selected_keys is not None else None
     cc_keys = set(body.cars_com_selected_keys) if body and body.cars_com_selected_keys is not None else None
+    cab_keys = set(body.carsandbids_selected_keys) if body and body.carsandbids_selected_keys is not None else None
     background_tasks.add_task(
         run_scrape_job, broadcaster, async_session_factory,
-        bat_selected_keys=bat_keys, cars_com_selected_keys=cc_keys,
+        bat_selected_keys=bat_keys,
+        cars_com_selected_keys=cc_keys,
+        carsandbids_selected_keys=cab_keys,
     )
     return {"message": "Scrape started. Connect to /api/admin/ws/stream to follow progress."}
 
