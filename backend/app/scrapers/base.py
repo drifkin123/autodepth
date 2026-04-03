@@ -31,6 +31,18 @@ class ScrapedListing:
     sold_price: int | None  # confirmed final price; None for active listings
     is_sold: bool
     listed_at: datetime
+    # Optional extracted metadata
+    make: str | None = None
+    model: str | None = None
+    trim: str | None = None
+    vin: str | None = None
+    transmission: str | None = None
+    no_reserve: bool | None = None
+    body_style: str | None = None
+    fuel_type: str | None = None
+    location: str | None = None
+    stock_type: str | None = None
+    # Existing optional fields
     sold_at: datetime | None = None
     mileage: int | None = None
     color: str | None = None
