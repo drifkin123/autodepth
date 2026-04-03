@@ -112,7 +112,7 @@ CAB_MAKES: list[tuple[str, str, str]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Cars.com — lowercase hyphenated make slugs for ?makes[]= query param
+# Cars.com — lowercase underscore-separated slugs for ?makes[]= query param
 # ---------------------------------------------------------------------------
 
 CARS_COM_MAKES: list[tuple[str, str, str]] = [
