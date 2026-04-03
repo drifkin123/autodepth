@@ -1,17 +1,24 @@
 """Tests for the Bring a Trailer scraper.
 
-Tests the pure parsing logic (no network calls). HTTP fetching is tested
-via a mocked httpx client.
+Fixture-based tests use real HTML saved from BaT to guard against selector
+drift. When BaT changes their HTML structure, update the fixture with:
+    uv run python scripts/fetch_bat_fixture.py
+
+Pure unit tests for parsing helpers use synthetic data and never need updating.
+HTTP fetching is tested via a mocked httpx client.
 """
 
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bat_porsche_911_gt3.html"
 
 from app.scrapers.bat_parser import (
     extract_items_from_html,
@@ -349,6 +356,78 @@ class TestExtractItemsFromHtml:
     def test_malformed_json_returns_empty(self) -> None:
         html = "<script>var auctionsCompletedInitialData = {not valid json};</script>"
         assert extract_items_from_html(html) == []
+
+
+# ─── Fixture loader ──────────────────────────────────────────────────────────
+
+@pytest.fixture
+def porsche_911_gt3_html() -> str:
+    """Real BaT HTML for the Porsche 911 GT3 completed auctions page."""
+    return FIXTURE_PATH.read_text(encoding="utf-8")
+
+
+# ─── Fixture-based extraction tests ─────────────────────────────────────────
+
+class TestExtractItemsFromFixture:
+    def test_returns_items(self, porsche_911_gt3_html: str) -> None:
+        """Fixture HTML must yield at least one item dict."""
+        items = extract_items_from_html(porsche_911_gt3_html)
+        assert len(items) > 0, (
+            "extract_items_from_html returned 0 items on real fixture HTML — "
+            "BaT may have changed their HTML structure. "
+            "Re-run scripts/fetch_bat_fixture.py to update the fixture."
+        )
+
+    def test_items_have_required_fields(self, porsche_911_gt3_html: str) -> None:
+        items = extract_items_from_html(porsche_911_gt3_html)
+        for item in items:
+            assert "title" in item, f"missing title in {item}"
+            assert "url" in item, f"missing url in {item}"
+            assert "sold_text" in item, f"missing sold_text in {item}"
+
+    def test_urls_point_to_bat(self, porsche_911_gt3_html: str) -> None:
+        items = extract_items_from_html(porsche_911_gt3_html)
+        for item in items:
+            assert item["url"].startswith("https://bringatrailer.com/listing/"), (
+                f"Unexpected URL: {item['url']}"
+            )
+
+    def test_has_sold_items(self, porsche_911_gt3_html: str) -> None:
+        items = extract_items_from_html(porsche_911_gt3_html)
+        sold = [i for i in items if i.get("sold_text", "").startswith("Sold")]
+        assert len(sold) > 0, "No confirmed sold items found in fixture — check fixture or BaT structure."
+
+    def test_parse_item_from_fixture(self, porsche_911_gt3_html: str) -> None:
+        items = extract_items_from_html(porsche_911_gt3_html)
+        parsed, skipped = [], {}
+        for item in items:
+            listing, reason = parse_item(item)
+            if listing is not None:
+                parsed.append(listing)
+            else:
+                skipped[reason] = skipped.get(reason, 0) + 1
+
+        assert len(parsed) > 0, f"No listings parsed from fixture. Skip reasons: {skipped}"
+
+        first = parsed[0]
+        assert first.source == "bring_a_trailer"
+        assert first.sale_type == "auction"
+        assert first.is_sold is True
+        assert first.sold_price is not None and first.sold_price > 0
+        assert first.asking_price == first.sold_price  # BaT: asking = hammer price
+        assert first.year is not None and first.year >= 2000  # GT3 is post-2000
+        assert first.source_url.startswith("https://bringatrailer.com/listing/")
+
+    def test_parsed_prices_are_sane(self, porsche_911_gt3_html: str) -> None:
+        items = extract_items_from_html(porsche_911_gt3_html)
+        prices = []
+        for item in items:
+            listing, _ = parse_item(item)
+            if listing is not None:
+                prices.append(listing.sold_price)
+        assert len(prices) > 0
+        # 911 GT3s should clear $50k
+        assert all(p > 50_000 for p in prices), f"Unexpectedly low prices: {prices}"
 
 
 # ─── fetch_page (mocked HTTP) ───────────────────────────────────────────────

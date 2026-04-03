@@ -330,6 +330,21 @@
               <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
             </div>
           </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2>Cars &amp; Bids</h2>
+              <span class="hint">Auction searches</span>
+            </div>
+            <div class="car-selector-controls">
+              <button class="btn-secondary" onclick="toggleAll('cab', true)">All</button>
+              <button class="btn-secondary" onclick="toggleAll('cab', false)">None</button>
+              <span class="count" id="cab-car-count">0 / 0</span>
+            </div>
+            <div class="car-selector" id="cab-car-selector">
+              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
+            </div>
+          </div>
         </div>
 
         <div class="panel">
@@ -443,6 +458,7 @@
   let logEmpty = true;
   let batUrls = [];
   let carsComUrls = [];
+  let cabUrls = [];
   let listingsCurrentPage = 1;
   let listingsTotal = 0;
   const LISTINGS_PAGE_SIZE = 50;
@@ -479,7 +495,7 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
   async function initDashboard() {
-    await Promise.all([loadLogs(), loadBatUrls(), loadCarsComUrls()]);
+    await Promise.all([loadLogs(), loadBatUrls(), loadCarsComUrls(), loadCarsAndBidsUrls()]);
     connectWebSocket();
     setInterval(pollStatus, 3000);
     pollStatus();
@@ -530,6 +546,15 @@
       if (!res.ok) return;
       carsComUrls = await res.json();
       renderSelector('cc', carsComUrls);
+    } catch (_) {}
+  }
+
+  async function loadCarsAndBidsUrls() {
+    try {
+      const res = await fetch(`/api/admin/scrapers/cars_and_bids/urls?token=${encodeURIComponent(TOKEN)}`);
+      if (!res.ok) return;
+      cabUrls = await res.json();
+      renderSelector('cab', cabUrls);
     } catch (_) {}
   }
 
@@ -726,7 +751,8 @@
   async function triggerScrape() {
     const batKeys = getSelectedKeys('bat');
     const ccKeys = getSelectedKeys('cc');
-    if (batKeys.length === 0 && ccKeys.length === 0) {
+    const cabKeys = getSelectedKeys('cab');
+    if (batKeys.length === 0 && ccKeys.length === 0 && cabKeys.length === 0) {
       alert('Select at least one car page to scrape.');
       return;
     }
@@ -737,6 +763,8 @@
     else if (batKeys.length < batUrls.length) body.bat_selected_keys = batKeys;
     if (ccKeys.length === 0) body.cars_com_selected_keys = [];
     else if (ccKeys.length < carsComUrls.length) body.cars_com_selected_keys = ccKeys;
+    if (cabKeys.length === 0) body.carsandbids_selected_keys = [];
+    else if (cabKeys.length < cabUrls.length) body.carsandbids_selected_keys = cabKeys;
     try {
       const res = await fetch(`/api/admin/scrape/trigger?token=${encodeURIComponent(TOKEN)}`, {
         method: 'POST',
