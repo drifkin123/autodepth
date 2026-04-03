@@ -3,14 +3,15 @@
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz, process
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.car import Car
+from app.models.listing_snapshot import ListingSnapshot
 from app.models.scrape_log import ScrapeLog
 from app.models.vehicle_sale import VehicleSale
 
@@ -115,32 +116,97 @@ class BaseScraper(ABC):
 
     async def save_listing(self, listing: ScrapedListing) -> bool:
         """Match, deduplicate, and persist a listing. Returns True if inserted."""
-        if await self.deduplicate(listing.source_url):
-            return False
-
         car = await self.match_car(listing.raw_title)
-        if car is None:
-            return False
 
-        sale = VehicleSale(
-            car_id=car.id,
-            source=listing.source,
-            source_url=listing.source_url,
-            sale_type=listing.sale_type,
-            year=listing.year,
-            mileage=listing.mileage,
-            color=listing.color,
-            asking_price=listing.asking_price,
-            sold_price=listing.sold_price,
-            is_sold=listing.is_sold,
-            listed_at=listing.listed_at,
-            sold_at=listing.sold_at,
-            condition_notes=listing.condition_notes,
-            options=listing.options,
-            raw_data=listing.raw_data,
-        )
-        self.session.add(sale)
-        return True
+        if listing.is_sold:
+            # Auction records are immutable: skip if already present.
+            if await self.deduplicate(listing.source_url):
+                return False
+
+            sale = VehicleSale(
+                car_id=car.id if car else None,
+                make=listing.make or (car.make if car else None),
+                model=listing.model or (car.model if car else None),
+                trim=listing.trim or (car.trim if car else None),
+                source=listing.source,
+                source_url=listing.source_url,
+                sale_type=listing.sale_type,
+                year=listing.year,
+                mileage=listing.mileage,
+                color=listing.color,
+                asking_price=listing.asking_price,
+                sold_price=listing.sold_price,
+                is_sold=listing.is_sold,
+                listed_at=listing.listed_at,
+                sold_at=listing.sold_at,
+                condition_notes=listing.condition_notes,
+                options=listing.options,
+                raw_data=listing.raw_data,
+                vin=listing.vin,
+                transmission=listing.transmission,
+                no_reserve=listing.no_reserve,
+                body_style=listing.body_style,
+                fuel_type=listing.fuel_type,
+                location=listing.location,
+                stock_type=listing.stock_type,
+            )
+            self.session.add(sale)
+            return True
+        else:
+            # Active listing: upsert — update price/mileage/last_seen_at if
+            # already known, or insert fresh. Always record a snapshot.
+            scraped_at = datetime.now(timezone.utc)
+            is_duplicate = await self.deduplicate(listing.source_url)
+
+            snapshot = ListingSnapshot(
+                source_url=listing.source_url,
+                scraped_at=scraped_at,
+                asking_price=listing.asking_price,
+                mileage=listing.mileage,
+            )
+            self.session.add(snapshot)
+
+            if is_duplicate:
+                await self.session.execute(
+                    update(VehicleSale)
+                    .where(VehicleSale.source_url == listing.source_url)
+                    .values(
+                        last_seen_at=scraped_at,
+                        asking_price=listing.asking_price,
+                        mileage=listing.mileage,
+                    )
+                )
+                return False
+            else:
+                sale = VehicleSale(
+                    car_id=car.id if car else None,
+                    make=listing.make or (car.make if car else None),
+                    model=listing.model or (car.model if car else None),
+                    trim=listing.trim or (car.trim if car else None),
+                    source=listing.source,
+                    source_url=listing.source_url,
+                    sale_type=listing.sale_type,
+                    year=listing.year,
+                    mileage=listing.mileage,
+                    color=listing.color,
+                    asking_price=listing.asking_price,
+                    sold_price=listing.sold_price,
+                    is_sold=listing.is_sold,
+                    listed_at=listing.listed_at,
+                    sold_at=listing.sold_at,
+                    condition_notes=listing.condition_notes,
+                    options=listing.options,
+                    raw_data=listing.raw_data,
+                    vin=listing.vin,
+                    transmission=listing.transmission,
+                    no_reserve=listing.no_reserve,
+                    body_style=listing.body_style,
+                    fuel_type=listing.fuel_type,
+                    location=listing.location,
+                    stock_type=listing.stock_type,
+                )
+                self.session.add(sale)
+                return True
 
     async def run(self) -> tuple[int, int]:
         """
