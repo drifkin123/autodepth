@@ -23,6 +23,7 @@ import re
 from datetime import datetime, timezone
 
 from app.scrapers.base import ScrapedListing
+from app.scrapers.bat_parser import parse_color
 
 SOURCE = "cars_and_bids"
 BASE_URL = "https://carsandbids.com"
@@ -103,6 +104,7 @@ def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
     listed_at = sold_at or datetime.now(timezone.utc)
     source_url = build_source_url(auction_id)
 
+    sub_title = item.get("sub_title") or ""
     listing = ScrapedListing(
         source=SOURCE,
         source_url=source_url,
@@ -115,12 +117,15 @@ def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
         listed_at=listed_at,
         sold_at=sold_at,
         mileage=mileage,
-        color=None,
-        condition_notes=item.get("sub_title") or None,
+        color=parse_color(sub_title),
+        transmission=item.get("transmission"),
+        location=item.get("location"),
+        no_reserve=bool(item.get("no_reserve", False)),
+        condition_notes=sub_title or None,
         raw_data={
             "id": auction_id,
             "title": title,
-            "sub_title": item.get("sub_title"),
+            "sub_title": sub_title or None,
             "status": item.get("status"),
             "sale_amount": price,
             "current_bid": item.get("current_bid"),

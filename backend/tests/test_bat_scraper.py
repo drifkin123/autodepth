@@ -49,6 +49,8 @@ SOLD_ITEM = {
     "url": "https://bringatrailer.com/listing/2019-porsche-911-gt3-rs-weissach-97/",
     "id": 108526570,
     "year": None,
+    "noreserve": False,
+    "country": "United States",
 }
 
 SOLD_ITEM_2 = {
@@ -265,6 +267,8 @@ class TestParseItem:
         assert listing.is_sold is True
         assert listing.source_url == SOLD_ITEM["url"]
         assert listing.sold_at == datetime(2026, 3, 29, tzinfo=timezone.utc)
+        assert listing.no_reserve is False
+        assert listing.location == "United States"
 
     def test_sold_item_with_mileage(self) -> None:
         listing, _ = parse_item(SOLD_ITEM_WITH_MILEAGE)
@@ -320,6 +324,23 @@ class TestParseItem:
         )
         assert listing is None
         assert reason == "no_price"
+
+    def test_no_reserve_true(self) -> None:
+        listing, _ = parse_item({**SOLD_ITEM, "noreserve": True})
+        assert listing is not None
+        assert listing.no_reserve is True
+
+    def test_no_reserve_defaults_false_when_absent(self) -> None:
+        item = {k: v for k, v in SOLD_ITEM.items() if k != "noreserve"}
+        listing, _ = parse_item(item)
+        assert listing is not None
+        assert listing.no_reserve is False
+
+    def test_location_none_when_country_absent(self) -> None:
+        item = {k: v for k, v in SOLD_ITEM.items() if k != "country"}
+        listing, _ = parse_item(item)
+        assert listing is not None
+        assert listing.location is None
 
 
 # ─── get_all_url_keys / get_url_entries ──────────────────────────────────────

@@ -127,6 +127,10 @@ def parse_listing(item: dict) -> tuple[ScrapedListing | None, str]:
         except (ValueError, TypeError):
             pass
 
+    stock_type_map = {"Used": "used", "New": "new", "Certified": "cpo"}
+    raw_stock_type = item.get("stockType")
+    stock_type = stock_type_map.get(raw_stock_type) if raw_stock_type else None
+
     listing = ScrapedListing(
         source=SOURCE,
         source_url=source_url,
@@ -140,6 +144,13 @@ def parse_listing(item: dict) -> tuple[ScrapedListing | None, str]:
         sold_at=None,
         mileage=mileage,
         color=None,
+        make=make or None,
+        model=model or None,
+        trim=trim or None,
+        vin=item.get("vin"),
+        body_style=item.get("bodyStyle"),
+        fuel_type=item.get("fuelType"),
+        stock_type=stock_type,
         raw_data={
             "listingId": item.get("listingId"),
             "vin": item.get("vin"),

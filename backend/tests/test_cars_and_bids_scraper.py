@@ -42,6 +42,9 @@ _SOLD_ITEM = {
     "current_bid": 155500,
     "mileage": "6,700 Miles",
     "auction_end": "2026-01-22T18:32:47.781+00:00",
+    "transmission": 2,
+    "location": "Los Angeles, CA 90001",
+    "no_reserve": False,
 }
 
 
@@ -159,6 +162,10 @@ class TestParseAuction:
         assert listing.asking_price == 155500
         assert listing.mileage == 6700
         assert listing.source_url == "https://carsandbids.com/auctions/abc123/"
+        assert listing.transmission == 2
+        assert listing.location == "Los Angeles, CA 90001"
+        assert listing.no_reserve is False
+        assert listing.color == "Lizard Green"
 
     def test_skips_reserve_not_met(self) -> None:
         item = {**_SOLD_ITEM, "status": "reserve_not_met", "sale_amount": None}
@@ -208,6 +215,30 @@ class TestParseAuction:
         assert listing.raw_data["id"] == "abc123"
         assert listing.raw_data["sale_amount"] == 155500
 
+    def test_no_reserve_true(self) -> None:
+        item = {**_SOLD_ITEM, "no_reserve": True}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.no_reserve is True
+
+    def test_no_reserve_defaults_false_when_absent(self) -> None:
+        item = {k: v for k, v in _SOLD_ITEM.items() if k != "no_reserve"}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.no_reserve is False
+
+    def test_color_none_when_no_color_in_sub_title(self) -> None:
+        item = {**_SOLD_ITEM, "sub_title": "~6,700 Miles, 520-hp Flat-6, Unmodified"}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.color is None
+
+    def test_location_none_when_absent(self) -> None:
+        item = {k: v for k, v in _SOLD_ITEM.items() if k != "location"}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.location is None
+
 
 # ─── Fixture-based tests ──────────────────────────────────────────────────────
 
@@ -246,6 +277,10 @@ class TestExtractFromFixture:
         assert first.sold_price is not None and first.sold_price > 0
         assert first.year >= 2010
         assert first.source_url.startswith("https://carsandbids.com/auctions/")
+        # New fields extracted from fixture (first sold item: id=9eNla8xk)
+        assert first.transmission == 1
+        assert first.location == "Elmwood Park, IL 60707"
+        assert first.no_reserve is False
 
     def test_parsed_prices_are_sane(self, porsche_911_gt3_auctions: list[dict]) -> None:
         prices = [

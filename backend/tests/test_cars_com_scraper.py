@@ -131,6 +131,13 @@ def test_parse_listing_from_fixture(porsche_911_html: str) -> None:
     assert first.asking_price > 0
     assert first.year >= 1990
     assert first.source_url.startswith("https://www.cars.com/vehicledetail/")
+    # New fields populated from fixture (first item: Porsche 911 Carrera T, Used)
+    assert first.make == "Porsche"
+    assert first.model == "911"
+    assert first.trim is not None
+    assert first.body_style == "Coupe"
+    assert first.fuel_type == "Gasoline"
+    assert first.stock_type == "used"
 
 
 # ─── Pagination tests ────────────────────────────────────────────────────────
@@ -167,6 +174,10 @@ def test_parse_listing_valid() -> None:
         "trim": "GT3",
         "price": "175000",
         "mileage": "4200",
+        "vin": "WP0AC2A99MS226301",
+        "bodyStyle": "Coupe",
+        "fuelType": "Gasoline",
+        "stockType": "Used",
     }
     listing, reason = parse_listing(item)
     assert listing is not None
@@ -177,6 +188,13 @@ def test_parse_listing_valid() -> None:
     assert listing.raw_title == "2021 Porsche 911 GT3"
     assert listing.is_sold is False
     assert listing.sold_price is None
+    assert listing.make == "Porsche"
+    assert listing.model == "911"
+    assert listing.trim == "GT3"
+    assert listing.vin == "WP0AC2A99MS226301"
+    assert listing.body_style == "Coupe"
+    assert listing.fuel_type == "Gasoline"
+    assert listing.stock_type == "used"
 
 
 def test_parse_listing_missing_url() -> None:
@@ -226,6 +244,36 @@ def test_parse_listing_no_mileage_allowed() -> None:
     listing, reason = parse_listing(item)
     assert listing is not None
     assert listing.mileage is None
+
+
+def test_parse_listing_stock_type_normalization() -> None:
+    base = {
+        "source_url": "https://www.cars.com/vehicledetail/x/",
+        "year": "2022",
+        "make": "Porsche",
+        "model": "911",
+        "price": "150000",
+    }
+    for raw, expected in [("Used", "used"), ("New", "new"), ("Certified", "cpo"), ("Unknown", None)]:
+        listing, _ = parse_listing({**base, "stockType": raw})
+        assert listing is not None
+        assert listing.stock_type == expected, f"stockType={raw!r} should map to {expected!r}"
+
+
+def test_parse_listing_new_fields_none_when_absent() -> None:
+    item = {
+        "source_url": "https://www.cars.com/vehicledetail/x/",
+        "year": "2022",
+        "make": "Porsche",
+        "model": "911",
+        "price": "150000",
+    }
+    listing, _ = parse_listing(item)
+    assert listing is not None
+    assert listing.vin is None
+    assert listing.body_style is None
+    assert listing.fuel_type is None
+    assert listing.stock_type is None
 
 
 # ─── Scraper class tests (mocked fetch) ──────────────────────────────────────
