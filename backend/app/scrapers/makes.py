@@ -115,6 +115,24 @@ CAB_MAKES: list[tuple[str, str, str]] = [
 # Cars.com — lowercase underscore-separated slugs for ?makes[]= query param
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Cars.com — model name substrings to filter facet results for tracked makes
+# Keys match the `key` field from CARS_COM_MAKES. Values are case-insensitive
+# substrings matched against the model facet "name" field in the results HTML.
+# Makes not listed here fall back to make-only scraping (no model filter).
+# ---------------------------------------------------------------------------
+
+CARS_COM_TRACKED_MODELS: dict[str, list[str]] = {
+    "porsche":       ["911", "Cayman", "718 Cayman", "718 Boxster", "918 Spyder"],
+    "ferrari":       ["458", "488", "F8", "SF90", "Roma"],
+    "lamborghini":   ["Hurac", "Aventador", "Urus"],  # "Hurac" catches "Huracán"
+    "mclaren":       ["570S", "600LT", "720S", "765LT", "Artura"],
+    "mercedes-benz": ["AMG GT"],
+    "audi":          ["R8", "RS6", "RS7"],
+    "chevrolet":     ["Corvette"],
+    "lotus":         ["Emira", "Evora", "Exige"],
+}
+
 CARS_COM_MAKES: list[tuple[str, str, str]] = [
     ("acura", "Acura", "acura"),
     ("alfa-romeo", "Alfa Romeo", "alfa_romeo"),

@@ -15,11 +15,12 @@ from app.scrapers.cars_com_parser import (
     BASE_URL,
     SOURCE,
     extract_listings_from_html,
+    extract_model_options_from_html,
     extract_page_meta,
     has_next_page,
     parse_listing,
 )
-from app.scrapers.makes import CARS_COM_MAKES
+from app.scrapers.makes import CARS_COM_MAKES, CARS_COM_TRACKED_MODELS
 
 MAX_PAGES_PER_SEARCH = 50
 
@@ -40,12 +41,33 @@ def get_url_entries() -> list[dict[str, str]]:
     ]
 
 
-def build_search_url(make_slug: str, page: int = 1) -> str:
+def build_search_url(make_slug: str, model_slug: str | None = None, page: int = 1) -> str:
+    model_part = f"&models[]={model_slug}" if model_slug else ""
     return (
         f"{BASE_URL}/shopping/results/"
-        f"?stock_type=used&makes[]={make_slug}"
-        f"&maximum_distance=all&zip=60606&page={page}"
+        f"?zip=60606&maximum_distance=9999&makes[]={make_slug}{model_part}"
+        f"&sort=best_match_desc&page={page}"
     )
+
+
+def get_tracked_model_slugs(
+    make_key: str,
+    available_models: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Filter available model options to only those in CARS_COM_TRACKED_MODELS.
+
+    Returns (name, slug) pairs where name matches any tracked substring for the
+    given make_key (case-insensitive substring match).
+    """
+    tracked_substrings = CARS_COM_TRACKED_MODELS.get(make_key)
+    if not tracked_substrings:
+        return []
+    results = []
+    for name, slug in available_models:
+        name_lower = name.lower()
+        if any(sub.lower() in name_lower for sub in tracked_substrings):
+            results.append((name, slug))
+    return results
 
 
 def fetch_page_sync(url: str) -> str:
@@ -96,42 +118,75 @@ class CarsComScraper(BaseScraper):
                     f"Scrape cancelled after {i - 1}/{len(urls)} makes.")
                 break
 
-            new_count, dup_count, skips = 0, 0, {}
-            for page_num in range(1, MAX_PAGES_PER_SEARCH + 1):
+            # For tracked makes: discover model slugs then scrape each make+model combo.
+            # For untracked makes: fall back to make-only scraping.
+            if key in CARS_COM_TRACKED_MODELS:
+                await self._emit("progress",
+                    f"[{i}/{len(urls)}] {label}: discovering models…")
+                try:
+                    discovery_html = await fetch_page(
+                        build_search_url(make_slug, page=1)
+                    )
+                except Exception as exc:
+                    await self._emit("error",
+                        f"[{i}/{len(urls)}] {label} model discovery: {exc}")
+                    continue
+                available = extract_model_options_from_html(discovery_html, make_slug)
+                model_targets = get_tracked_model_slugs(key, available)
+                if not model_targets:
+                    await self._emit("warning",
+                        f"[{i}/{len(urls)}] {label}: no tracked models found in facets — skipping")
+                    continue
+                combos: list[tuple[str, str | None]] = [
+                    (model_name, model_slug)
+                    for model_name, model_slug in model_targets
+                ]
+            else:
+                combos = [(label, None)]
+
+            for model_name, model_slug in combos:
                 if self._is_cancelled():
                     break
-                search_url = build_search_url(make_slug, page=page_num)
-                await self._emit("progress", f"[{i}/{len(urls)}] {label} (p{page_num})…")
-                try:
-                    html = await fetch_page(search_url)
-                except Exception as exc:
-                    await self._emit("error", f"[{i}/{len(urls)}] {label} p{page_num}: {exc}")
-                    break
-                items = extract_listings_from_html(html)
-                if not items:
-                    break
-                for item in items:
-                    listing, reason = parse_listing(item)
-                    if listing is None:
-                        skips[reason] = skips.get(reason, 0) + 1
-                    elif listing.source_url in seen_urls:
-                        dup_count += 1
-                    else:
-                        seen_urls.add(listing.source_url)
-                        all_listings.append(listing)
-                        new_count += 1
-                if not has_next_page(html):
-                    break
-                await asyncio.sleep(3.0)
+                combo_label = f"{label} {model_name}" if model_slug else label
+                new_count, dup_count, skips = 0, 0, {}
 
-            dup_s = f", {dup_count} dups" if dup_count else ""
-            skip_s = f" — skipped: {skips}" if skips else ""
-            level = "warning" if new_count == 0 else "progress"
-            await self._emit(level,
-                f"[{i}/{len(urls)}] {label}: {new_count} new{dup_s}{skip_s} "
-                f"(total: {len(all_listings)})")
+                for page_num in range(1, MAX_PAGES_PER_SEARCH + 1):
+                    if self._is_cancelled():
+                        break
+                    search_url = build_search_url(make_slug, model_slug, page=page_num)
+                    await self._emit("progress",
+                        f"[{i}/{len(urls)}] {combo_label} (p{page_num})…")
+                    try:
+                        html = await fetch_page(search_url)
+                    except Exception as exc:
+                        await self._emit("error",
+                            f"[{i}/{len(urls)}] {combo_label} p{page_num}: {exc}")
+                        break
+                    items = extract_listings_from_html(html)
+                    if not items:
+                        break
+                    for item in items:
+                        listing, reason = parse_listing(item)
+                        if listing is None:
+                            skips[reason] = skips.get(reason, 0) + 1
+                        elif listing.source_url in seen_urls:
+                            dup_count += 1
+                        else:
+                            seen_urls.add(listing.source_url)
+                            all_listings.append(listing)
+                            new_count += 1
+                    if not has_next_page(html):
+                        break
+                    await asyncio.sleep(3.0)
 
-            if i < len(urls) and not self._is_cancelled():
-                await asyncio.sleep(3.0)
+                dup_s = f", {dup_count} dups" if dup_count else ""
+                skip_s = f" — skipped: {skips}" if skips else ""
+                level = "warning" if new_count == 0 else "progress"
+                await self._emit(level,
+                    f"[{i}/{len(urls)}] {combo_label}: {new_count} new{dup_s}{skip_s} "
+                    f"(total: {len(all_listings)})")
+
+                if not self._is_cancelled():
+                    await asyncio.sleep(3.0)
 
         return all_listings
