@@ -39,7 +39,6 @@ class CarsComUrlEntry(BaseModel):
     key: str
     label: str
     make: str
-    model: str
 
 
 class CarsAndBidsUrlEntry(BaseModel):
