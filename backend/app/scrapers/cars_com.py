@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 
-from curl_cffi import requests as cffi_requests
+from curl_cffi.requests import Session
 
 from app.scrapers.base import BaseScraper, ScrapedListing
 from app.scrapers.cars_com_parser import (
@@ -24,9 +24,15 @@ from app.scrapers.makes import CARS_COM_MAKES, CARS_COM_TRACKED_MODELS
 
 MAX_PAGES_PER_SEARCH = 50
 
-_HEADERS = {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
+# A single session persists TLS state and cookies across requests, making the
+# traffic pattern look more like a real browser session.
+_SESSION = Session(impersonate="chrome142")
+
+# Extra headers on top of what chrome142 impersonation sets automatically.
+# Keep the list minimal — over-specifying can itself look synthetic.
+_EXTRA_HEADERS = {
+    "accept-language": "en-US,en;q=0.9",
+    "referer": "https://www.cars.com/",
 }
 
 
@@ -71,11 +77,8 @@ def get_tracked_model_slugs(
 
 
 def fetch_page_sync(url: str) -> str:
-    """Fetch a page using curl_cffi (sync, called from thread)."""
-    resp = cffi_requests.get(
-        url, headers=_HEADERS, impersonate="chrome",
-        timeout=30, allow_redirects=True,
-    )
+    """Fetch a page using the persistent curl_cffi session (sync, called from thread)."""
+    resp = _SESSION.get(url, headers=_EXTRA_HEADERS, timeout=30, allow_redirects=True)
     resp.raise_for_status()
     return resp.text
 
