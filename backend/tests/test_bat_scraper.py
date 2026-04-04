@@ -29,13 +29,13 @@ from app.scrapers.bat_parser import (
     parse_year,
 )
 from app.scrapers.bring_a_trailer import (
-    BAT_URLS,
     BASE_URL,
     BringATrailerScraper,
     fetch_page,
     get_all_url_keys,
     get_url_entries,
 )
+from app.scrapers.makes import BAT_MAKES
 
 
 # ─── Sample BaT JSON items (mirrors real site structure) ─────────────────────
@@ -346,14 +346,14 @@ class TestParseItem:
 # ─── get_all_url_keys / get_url_entries ──────────────────────────────────────
 
 class TestUrlHelpers:
-    def test_get_all_url_keys_matches_bat_urls(self) -> None:
+    def test_get_all_url_keys_matches_bat_makes(self) -> None:
         keys = get_all_url_keys()
-        assert len(keys) == len(BAT_URLS)
-        assert keys[0] == BAT_URLS[0][0]
+        assert len(keys) == len(BAT_MAKES)
+        assert keys[0] == BAT_MAKES[0][0]
 
     def test_get_url_entries_returns_dicts(self) -> None:
         entries = get_url_entries()
-        assert len(entries) == len(BAT_URLS)
+        assert len(entries) == len(BAT_MAKES)
         first = entries[0]
         assert "key" in first and "label" in first and "path" in first
 
@@ -461,12 +461,12 @@ class TestFetchPage:
         client = AsyncMock(spec=httpx.AsyncClient)
         client.get = AsyncMock(return_value=mock_response)
 
-        items = await fetch_page(client, "porsche/911-gt3")
+        items = await fetch_page(client, "porsche")
         assert len(items) == 1
         assert items[0]["title"] == SOLD_ITEM["title"]
         client.get.assert_called_once()
         call_url = client.get.call_args[0][0]
-        assert call_url == f"{BASE_URL}/porsche/911-gt3/"
+        assert call_url == f"{BASE_URL}/porsche/"
 
 
 # ─── BringATrailerScraper.scrape ─────────────────────────────────────────────
@@ -538,7 +538,7 @@ class TestBringATrailerScraper:
 
         mock_session = AsyncMock()
         scraper = BringATrailerScraper(
-            mock_session, selected_keys={"porsche-911-gt3", "ferrari-488"}
+            mock_session, selected_keys={"porsche", "ferrari"}
         )
 
         with patch("app.scrapers.bring_a_trailer.httpx.AsyncClient") as MockClient:
@@ -609,7 +609,7 @@ class TestBringATrailerScraper:
             with patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock):
                 await scraper.scrape()
 
-        assert mock_client.get.call_count == len(BAT_URLS)
+        assert mock_client.get.call_count == len(BAT_MAKES)
 
     async def test_scrape_returns_multiple_unique_listings(self) -> None:
         """Different items from different pages should all be returned."""
@@ -619,7 +619,7 @@ class TestBringATrailerScraper:
         mock_session = AsyncMock()
         # Scrape only 1 URL to avoid dedup collapsing across pages
         scraper = BringATrailerScraper(
-            mock_session, selected_keys={"porsche-911-gt3"}
+            mock_session, selected_keys={"porsche"}
         )
 
         with patch("app.scrapers.bring_a_trailer.httpx.AsyncClient") as MockClient:

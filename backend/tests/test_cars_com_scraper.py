@@ -16,12 +16,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.scrapers.cars_com import (
-    CARS_COM_URLS,
     CarsComScraper,
     build_search_url,
     get_all_url_keys,
     get_url_entries,
 )
+from app.scrapers.makes import CARS_COM_MAKES
 from app.scrapers.cars_com_parser import (
     BASE_URL,
     extract_listings_from_html,
@@ -43,37 +43,37 @@ def porsche_911_html() -> str:
 
 # ─── URL helpers ─────────────────────────────────────────────────────────────
 
-def test_build_search_url_porsche_911() -> None:
-    url = build_search_url("porsche", "porsche-911", page=1)
+def test_build_search_url_porsche() -> None:
+    url = build_search_url("porsche", page=1)
     assert "makes[]=porsche" in url
-    assert "models[]=porsche-911" in url
+    assert "models[]" not in url
     assert "page=1" in url
     assert url.startswith("https://www.cars.com")
 
 
 def test_build_search_url_page_param() -> None:
-    url2 = build_search_url("ferrari", "ferrari-458_italia", page=2)
+    url2 = build_search_url("ferrari", page=2)
     assert "page=2" in url2
 
 
 def test_get_all_url_keys_nonempty() -> None:
     keys = get_all_url_keys()
     assert len(keys) > 0
-    assert "porsche-911" in keys
+    assert "porsche" in keys
 
 
 def test_get_url_entries_structure() -> None:
     entries = get_url_entries()
     assert len(entries) > 0
     entry = entries[0]
-    assert {"key", "label", "make", "model"} == set(entry.keys())
+    assert {"key", "label", "make"} == set(entry.keys())
 
 
 def test_cars_com_urls_registry() -> None:
-    assert len(CARS_COM_URLS) > 0
-    # Each entry is a 4-tuple
-    for key, label, make, model in CARS_COM_URLS:
-        assert key and label and make and model
+    assert len(CARS_COM_MAKES) > 0
+    # Each entry is a 3-tuple
+    for key, label, make in CARS_COM_MAKES:
+        assert key and label and make
 
 
 # ─── Fixture-based extraction tests ─────────────────────────────────────────
@@ -299,7 +299,7 @@ async def _make_scraper_with_fixture(fixture_html: str) -> tuple:
 
 @patch("app.scrapers.cars_com.fetch_page")
 @patch("app.scrapers.cars_com.asyncio.sleep", new_callable=AsyncMock)
-async def test_scraper_calls_fetch_for_each_model(
+async def test_scraper_calls_fetch_for_each_make(
     mock_sleep: AsyncMock,
     mock_fetch: AsyncMock,
     porsche_911_html: str,
@@ -319,7 +319,7 @@ async def test_scraper_calls_fetch_for_each_model(
 
     scraper = CarsComScraper(
         session, None,
-        selected_keys=["porsche-911"],
+        selected_keys=["porsche"],
     )
 
     listings = await scraper.scrape()
@@ -349,7 +349,7 @@ async def test_scraper_stops_on_last_page(
 
     scraper = CarsComScraper(
         session, None,
-        selected_keys=["porsche-911"],
+        selected_keys=["porsche"],
     )
     await scraper.scrape()
 
@@ -376,7 +376,7 @@ async def test_scraper_stops_on_cancel(
     ))
     scraper = CarsComScraper(
         session, None,
-        selected_keys=["porsche-911", "porsche-718"],
+        selected_keys=["porsche", "ferrari"],
         cancel_event=cancel_event,
     )
     listings = await scraper.scrape()
@@ -399,7 +399,7 @@ async def test_scraper_handles_fetch_error_gracefully(
         scalar_one_or_none=MagicMock(return_value=None),
         scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
     ))
-    scraper = CarsComScraper(session, None, selected_keys=["porsche-911"])
+    scraper = CarsComScraper(session, None, selected_keys=["porsche"])
     listings = await scraper.scrape()
     assert listings == []
 
@@ -411,7 +411,7 @@ async def test_scraper_deduplicates_within_run(
     mock_fetch: AsyncMock,
     porsche_911_html: str,
 ) -> None:
-    """Same URL returned twice (across models) is only added once."""
+    """Same URL returned twice (across makes) is only added once."""
     mock_fetch.return_value = porsche_911_html
 
     session = MagicMock()
@@ -422,10 +422,10 @@ async def test_scraper_deduplicates_within_run(
     session.add = MagicMock()
     session.commit = AsyncMock()
 
-    # Two identical model keys — same HTML returned for both
+    # One make key — same HTML returned for it
     scraper = CarsComScraper(
         session, None,
-        selected_keys=["porsche-911"],
+        selected_keys=["porsche"],
     )
     listings_1 = await scraper.scrape()
 

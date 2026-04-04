@@ -18,6 +18,7 @@ import logging
 
 from app.scrapers.base import BaseScraper, ScrapedListing
 from app.scrapers.cars_and_bids_parser import SOURCE, parse_auction
+from app.scrapers.makes import CAB_MAKES
 
 logger = logging.getLogger(__name__)
 
@@ -28,49 +29,15 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-MAX_PAGES_PER_SEARCH = 3
-
-# Each entry: (key, human label, search query string)
-CAB_URLS: list[tuple[str, str, str]] = [
-    # Porsche
-    ("porsche-911-gt3", "Porsche 911 GT3", "porsche 911 gt3"),
-    ("porsche-911-turbo", "Porsche 911 Turbo", "porsche 911 turbo"),
-    ("porsche-cayman-gt4", "Porsche Cayman GT4", "porsche cayman gt4"),
-    ("porsche-918-spyder", "Porsche 918 Spyder", "porsche 918"),
-    # Ferrari
-    ("ferrari-458", "Ferrari 458", "ferrari 458"),
-    ("ferrari-488", "Ferrari 488", "ferrari 488"),
-    ("ferrari-f8", "Ferrari F8", "ferrari f8 tributo"),
-    ("ferrari-sf90", "Ferrari SF90", "ferrari sf90"),
-    ("ferrari-roma", "Ferrari Roma", "ferrari roma"),
-    # Lamborghini
-    ("lamborghini-huracan", "Lamborghini Huracán", "lamborghini huracan"),
-    ("lamborghini-aventador", "Lamborghini Aventador", "lamborghini aventador"),
-    ("lamborghini-urus", "Lamborghini Urus", "lamborghini urus"),
-    # McLaren
-    ("mclaren-720s", "McLaren 720S", "mclaren 720s"),
-    ("mclaren-765lt", "McLaren 765LT", "mclaren 765lt"),
-    # Mercedes-AMG
-    ("mercedes-amg-gt", "Mercedes-AMG GT", "mercedes-amg gt"),
-    # Audi
-    ("audi-r8", "Audi R8", "audi r8"),
-    ("audi-rs6", "Audi RS6", "audi rs6"),
-    ("audi-rs7", "Audi RS7", "audi rs7"),
-    # Chevrolet
-    ("chevrolet-corvette-c8", "Chevrolet Corvette C8", "corvette c8"),
-    # Lotus
-    ("lotus-emira", "Lotus Emira", "lotus emira"),
-    ("lotus-evora", "Lotus Evora", "lotus evora"),
-    ("lotus-exige", "Lotus Exige", "lotus exige"),
-]
+MAX_PAGES_PER_SEARCH = 20
 
 
 def get_all_url_keys() -> list[str]:
-    return [key for key, _, _ in CAB_URLS]
+    return [key for key, _, _ in CAB_MAKES]
 
 
 def get_url_entries() -> list[dict[str, str]]:
-    return [{"key": key, "label": label, "query": query} for key, label, query in CAB_URLS]
+    return [{"key": key, "label": label, "query": query} for key, label, query in CAB_MAKES]
 
 
 class CarsAndBidsScraper(BaseScraper):
@@ -86,8 +53,8 @@ class CarsAndBidsScraper(BaseScraper):
 
     def _get_entries(self) -> list[tuple[str, str, str]]:
         if self._selected_keys is None:
-            return list(CAB_URLS)
-        return [(k, l, q) for k, l, q in CAB_URLS if k in self._selected_keys]
+            return list(CAB_MAKES)
+        return [(k, l, q) for k, l, q in CAB_MAKES if k in self._selected_keys]
 
     async def _fetch_search_results(self, search_query: str) -> list[dict]:
         """Use Playwright to search C&B and return raw auction dicts.

@@ -18,41 +18,9 @@ from app.scrapers.bat_parser import (
     parse_sold_text,
     parse_year,
 )
+from app.scrapers.makes import BAT_MAKES
 
 BASE_URL = "https://bringatrailer.com"
-
-# Each entry: (url_path_key, human label, BaT URL path segment).
-BAT_URLS: list[tuple[str, str, str]] = [
-    # Porsche
-    ("porsche-911-gt3", "Porsche 911 GT3", "porsche/911-gt3"),
-    ("porsche-911-turbo", "Porsche 911 Turbo", "porsche/911-turbo"),
-    ("porsche-cayman-gt4", "Porsche Cayman GT4", "porsche/cayman-gt4"),
-    ("porsche-918-spyder", "Porsche 918 Spyder", "porsche/918-spyder"),
-    # Ferrari
-    ("ferrari-458", "Ferrari 458", "ferrari/458"),
-    ("ferrari-488", "Ferrari 488", "ferrari/488"),
-    ("ferrari-f8", "Ferrari F8", "ferrari/f8"),
-    ("ferrari-sf90", "Ferrari SF90", "ferrari/sf90"),
-    ("ferrari-roma", "Ferrari Roma", "ferrari/roma"),
-    # Lamborghini
-    ("lamborghini-huracan", "Lamborghini Huracán", "lamborghini/huaracan"),
-    ("lamborghini-aventador", "Lamborghini Aventador", "lamborghini/aventador"),
-    ("lamborghini-urus", "Lamborghini Urus", "lamborghini/urus"),
-    # McLaren
-    ("mclaren-super-series", "McLaren Super Series (720S/765LT)", "mclaren/super-series"),
-    # Mercedes-AMG
-    ("mercedes-amg-gt", "Mercedes-AMG GT", "mercedes-benz/amg-gt"),
-    # Audi
-    ("audi-r8", "Audi R8", "audi/r8"),
-    ("audi-rs6", "Audi RS6", "audi/rs6"),
-    ("audi-rs7", "Audi RS7", "audi/rs7"),
-    # Chevrolet
-    ("chevrolet-corvette", "Chevrolet Corvette", "chevrolet/corvette"),
-    # Lotus
-    ("lotus-emira", "Lotus Emira", "lotus/emira"),
-    ("lotus-evora", "Lotus Evora", "lotus/evora"),
-    ("lotus-exige", "Lotus Exige", "lotus/exige"),
-]
 
 _HEADERS = {
     "User-Agent": (
@@ -65,11 +33,11 @@ _HEADERS = {
 
 
 def get_all_url_keys() -> list[str]:
-    return [key for key, _, _ in BAT_URLS]
+    return [key for key, _, _ in BAT_MAKES]
 
 
 def get_url_entries() -> list[dict[str, str]]:
-    return [{"key": key, "label": label, "path": path} for key, label, path in BAT_URLS]
+    return [{"key": key, "label": label, "path": slug} for key, label, slug in BAT_MAKES]
 
 
 async def fetch_page(client: httpx.AsyncClient, url_path: str) -> list[dict]:
@@ -93,8 +61,8 @@ class BringATrailerScraper(BaseScraper):
 
     def _get_urls(self) -> list[tuple[str, str, str]]:
         if self._selected_keys is None:
-            return list(BAT_URLS)
-        return [(k, l, p) for k, l, p in BAT_URLS if k in self._selected_keys]
+            return list(BAT_MAKES)
+        return [(k, l, s) for k, l, s in BAT_MAKES if k in self._selected_keys]
 
     async def scrape(self) -> list[ScrapedListing]:
         urls = self._get_urls()
