@@ -3,14 +3,15 @@
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz, process
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.car import Car
+from app.models.listing_snapshot import ListingSnapshot
 from app.models.scrape_log import ScrapeLog
 from app.models.vehicle_sale import VehicleSale
 
@@ -31,6 +32,18 @@ class ScrapedListing:
     sold_price: int | None  # confirmed final price; None for active listings
     is_sold: bool
     listed_at: datetime
+    # Optional extracted metadata
+    make: str | None = None
+    model: str | None = None
+    trim: str | None = None
+    vin: str | None = None
+    transmission: str | None = None
+    no_reserve: bool | None = None
+    body_style: str | None = None
+    fuel_type: str | None = None
+    location: str | None = None
+    stock_type: str | None = None
+    # Existing optional fields
     sold_at: datetime | None = None
     mileage: int | None = None
     color: str | None = None
@@ -101,17 +114,13 @@ class BaseScraper(ABC):
         )
         return result.scalar_one_or_none() is not None
 
-    async def save_listing(self, listing: ScrapedListing) -> bool:
-        """Match, deduplicate, and persist a listing. Returns True if inserted."""
-        if await self.deduplicate(listing.source_url):
-            return False
-
-        car = await self.match_car(listing.raw_title)
-        if car is None:
-            return False
-
-        sale = VehicleSale(
-            car_id=car.id,
+    def _build_vehicle_sale(self, listing: ScrapedListing, car: Car | None) -> VehicleSale:
+        """Construct a VehicleSale from a scraped listing and optional catalog match."""
+        return VehicleSale(
+            car_id=car.id if car else None,
+            make=listing.make or (car.make if car else None),
+            model=listing.model or (car.model if car else None),
+            trim=listing.trim or (car.trim if car else None),
             source=listing.source,
             source_url=listing.source_url,
             sale_type=listing.sale_type,
@@ -126,9 +135,54 @@ class BaseScraper(ABC):
             condition_notes=listing.condition_notes,
             options=listing.options,
             raw_data=listing.raw_data,
+            vin=listing.vin,
+            transmission=listing.transmission,
+            no_reserve=listing.no_reserve,
+            body_style=listing.body_style,
+            fuel_type=listing.fuel_type,
+            location=listing.location,
+            stock_type=listing.stock_type,
         )
-        self.session.add(sale)
-        return True
+
+    async def save_listing(self, listing: ScrapedListing) -> bool:
+        """Match, deduplicate, and persist a listing. Returns True if inserted."""
+        if listing.is_sold:
+            # Auction records are immutable: skip if already present.
+            # Deduplicate before match_car to avoid a wasted DB query.
+            if await self.deduplicate(listing.source_url):
+                return False
+            car = await self.match_car(listing.raw_title)
+            self.session.add(self._build_vehicle_sale(listing, car))
+            return True
+        else:
+            # Active listing: upsert — update price/mileage/last_seen_at if
+            # already known, or insert fresh. Always record a snapshot.
+            car = await self.match_car(listing.raw_title)
+            scraped_at = datetime.now(timezone.utc)
+            is_duplicate = await self.deduplicate(listing.source_url)
+
+            snapshot = ListingSnapshot(
+                source_url=listing.source_url,
+                scraped_at=scraped_at,
+                asking_price=listing.asking_price,
+                mileage=listing.mileage,
+            )
+            self.session.add(snapshot)
+
+            if is_duplicate:
+                await self.session.execute(
+                    update(VehicleSale)
+                    .where(VehicleSale.source_url == listing.source_url)
+                    .values(
+                        last_seen_at=scraped_at,
+                        asking_price=listing.asking_price,
+                        mileage=listing.mileage,
+                    )
+                )
+                return False
+            else:
+                self.session.add(self._build_vehicle_sale(listing, car))
+                return True
 
     async def run(self) -> tuple[int, int]:
         """

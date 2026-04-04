@@ -19,46 +19,9 @@ from app.scrapers.cars_com_parser import (
     has_next_page,
     parse_listing,
 )
+from app.scrapers.makes import CARS_COM_MAKES
 
-# ---------------------------------------------------------------------------
-# URL registry
-# ---------------------------------------------------------------------------
-
-CARS_COM_URLS: list[tuple[str, str, str, str]] = [
-    # Porsche
-    ("porsche-911", "Porsche 911", "porsche", "porsche-911"),
-    ("porsche-718", "Porsche 718 Cayman", "porsche", "porsche-718_cayman"),
-    ("porsche-918", "Porsche 918 Spyder", "porsche", "porsche-918_spyder"),
-    # Ferrari
-    ("ferrari-458", "Ferrari 458", "ferrari", "ferrari-458_italia"),
-    ("ferrari-488", "Ferrari 488", "ferrari", "ferrari-488_gtb"),
-    ("ferrari-f8", "Ferrari F8", "ferrari", "ferrari-f8_tributo"),
-    ("ferrari-sf90", "Ferrari SF90", "ferrari", "ferrari-sf90_stradale"),
-    ("ferrari-roma", "Ferrari Roma", "ferrari", "ferrari-roma"),
-    # Lamborghini
-    ("lamborghini-huracan", "Lamborghini Huracan", "lamborghini", "lamborghini-huracan"),
-    ("lamborghini-aventador", "Lamborghini Aventador", "lamborghini", "lamborghini-aventador"),
-    ("lamborghini-urus", "Lamborghini Urus", "lamborghini", "lamborghini-urus"),
-    # McLaren
-    ("mclaren-720s", "McLaren 720S", "mclaren", "mclaren-720s"),
-    ("mclaren-570s", "McLaren 570S", "mclaren", "mclaren-570s"),
-    ("mclaren-765lt", "McLaren 765LT", "mclaren", "mclaren-765lt"),
-    ("mclaren-artura", "McLaren Artura", "mclaren", "mclaren-artura"),
-    # Mercedes-AMG
-    ("mercedes-amg-gt", "Mercedes-AMG GT", "mercedes_benz", "mercedes_benz-amg_gt"),
-    # Audi
-    ("audi-r8", "Audi R8", "audi", "audi-r8"),
-    ("audi-rs6", "Audi RS6", "audi", "audi-rs6"),
-    ("audi-rs7", "Audi RS7", "audi", "audi-rs7"),
-    # Chevrolet
-    ("chevrolet-corvette", "Chevrolet Corvette", "chevrolet", "chevrolet-corvette"),
-    # Lotus
-    ("lotus-emira", "Lotus Emira", "lotus", "lotus-emira"),
-    ("lotus-evora", "Lotus Evora", "lotus", "lotus-evora"),
-    ("lotus-exige", "Lotus Exige", "lotus", "lotus-exige"),
-]
-
-MAX_PAGES_PER_SEARCH = 3
+MAX_PAGES_PER_SEARCH = 50
 
 _HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -67,20 +30,20 @@ _HEADERS = {
 
 
 def get_all_url_keys() -> list[str]:
-    return [key for key, _, _, _ in CARS_COM_URLS]
+    return [key for key, _, _ in CARS_COM_MAKES]
 
 
 def get_url_entries() -> list[dict[str, str]]:
     return [
-        {"key": key, "label": label, "make": make, "model": model}
-        for key, label, make, model in CARS_COM_URLS
+        {"key": key, "label": label, "make": slug}
+        for key, label, slug in CARS_COM_MAKES
     ]
 
 
-def build_search_url(make_slug: str, model_slug: str, page: int = 1) -> str:
+def build_search_url(make_slug: str, page: int = 1) -> str:
     return (
         f"{BASE_URL}/shopping/results/"
-        f"?stock_type=used&makes[]={make_slug}&models[]={model_slug}"
+        f"?stock_type=used&makes[]={make_slug}"
         f"&maximum_distance=all&zip=60606&page={page}"
     )
 
@@ -111,10 +74,10 @@ class CarsComScraper(BaseScraper):
     def _is_cancelled(self) -> bool:
         return self._cancel_event is not None and self._cancel_event.is_set()
 
-    def _get_urls(self) -> list[tuple[str, str, str, str]]:
+    def _get_urls(self) -> list[tuple[str, str, str]]:
         if self._selected_keys is None:
-            return list(CARS_COM_URLS)
-        return [(k, l, m, mo) for k, l, m, mo in CARS_COM_URLS if k in self._selected_keys]
+            return list(CARS_COM_MAKES)
+        return [(k, l, s) for k, l, s in CARS_COM_MAKES if k in self._selected_keys]
 
     async def scrape(self) -> list[ScrapedListing]:
         urls = self._get_urls()
@@ -124,20 +87,20 @@ class CarsComScraper(BaseScraper):
 
         all_listings: list[ScrapedListing] = []
         seen_urls: set[str] = set()
-        await self._emit("progress", f"Starting Cars.com scrape: {len(urls)} models",
-            {"total_urls": len(urls), "selected_keys": [k for k, _, _, _ in urls]})
+        await self._emit("progress", f"Starting Cars.com scrape: {len(urls)} makes",
+            {"total_urls": len(urls), "selected_keys": [k for k, _, _ in urls]})
 
-        for i, (key, label, make_slug, model_slug) in enumerate(urls, 1):
+        for i, (key, label, make_slug) in enumerate(urls, 1):
             if self._is_cancelled():
                 await self._emit("warning",
-                    f"Scrape cancelled after {i - 1}/{len(urls)} models.")
+                    f"Scrape cancelled after {i - 1}/{len(urls)} makes.")
                 break
 
             new_count, dup_count, skips = 0, 0, {}
             for page_num in range(1, MAX_PAGES_PER_SEARCH + 1):
                 if self._is_cancelled():
                     break
-                search_url = build_search_url(make_slug, model_slug, page=page_num)
+                search_url = build_search_url(make_slug, page=page_num)
                 await self._emit("progress", f"[{i}/{len(urls)}] {label} (p{page_num})…")
                 try:
                     html = await fetch_page(search_url)

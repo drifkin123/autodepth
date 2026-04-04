@@ -3,5 +3,6 @@ from app.models.vehicle_sale import VehicleSale
 from app.models.price_prediction import PricePrediction
 from app.models.watchlist import WatchlistItem
 from app.models.scrape_log import ScrapeLog
+from app.models.listing_snapshot import ListingSnapshot
 
-__all__ = ["Car", "VehicleSale", "PricePrediction", "WatchlistItem", "ScrapeLog"]
+__all__ = ["Car", "VehicleSale", "PricePrediction", "WatchlistItem", "ScrapeLog", "ListingSnapshot"]

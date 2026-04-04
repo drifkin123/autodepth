@@ -104,6 +104,8 @@ def parse_item(item: dict) -> tuple[ScrapedListing | None, str]:
         sold_at=sold_date,
         mileage=parse_mileage(title),
         color=parse_color(title),
+        no_reserve=bool(item.get("noreserve", False)),
+        location=item.get("country"),
         raw_data={"title": title, "url": url, "sold_text": sold_text, "bat_id": item.get("id")},
     )
     return listing, ""

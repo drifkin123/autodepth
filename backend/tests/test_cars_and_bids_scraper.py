@@ -17,11 +17,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.scrapers.cars_and_bids import (
-    CAB_URLS,
     CarsAndBidsScraper,
     get_all_url_keys,
     get_url_entries,
 )
+from app.scrapers.makes import CAB_MAKES
 from app.scrapers.cars_and_bids_parser import (
     SOURCE,
     build_source_url,
@@ -42,6 +42,9 @@ _SOLD_ITEM = {
     "current_bid": 155500,
     "mileage": "6,700 Miles",
     "auction_end": "2026-01-22T18:32:47.781+00:00",
+    "transmission": 2,
+    "location": "Los Angeles, CA 90001",
+    "no_reserve": False,
 }
 
 
@@ -58,7 +61,7 @@ def porsche_911_gt3_auctions() -> list[dict]:
 def test_get_all_url_keys_nonempty() -> None:
     keys = get_all_url_keys()
     assert len(keys) > 0
-    assert "porsche-911-gt3" in keys
+    assert "porsche" in keys
 
 
 def test_get_url_entries_structure() -> None:
@@ -69,8 +72,8 @@ def test_get_url_entries_structure() -> None:
 
 
 def test_cab_urls_registry() -> None:
-    assert len(CAB_URLS) > 0
-    for key, label, query in CAB_URLS:
+    assert len(CAB_MAKES) > 0
+    for key, label, query in CAB_MAKES:
         assert key and label and query
 
 
@@ -159,6 +162,10 @@ class TestParseAuction:
         assert listing.asking_price == 155500
         assert listing.mileage == 6700
         assert listing.source_url == "https://carsandbids.com/auctions/abc123/"
+        assert listing.transmission == 2
+        assert listing.location == "Los Angeles, CA 90001"
+        assert listing.no_reserve is False
+        assert listing.color == "Lizard Green"
 
     def test_skips_reserve_not_met(self) -> None:
         item = {**_SOLD_ITEM, "status": "reserve_not_met", "sale_amount": None}
@@ -208,6 +215,30 @@ class TestParseAuction:
         assert listing.raw_data["id"] == "abc123"
         assert listing.raw_data["sale_amount"] == 155500
 
+    def test_no_reserve_true(self) -> None:
+        item = {**_SOLD_ITEM, "no_reserve": True}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.no_reserve is True
+
+    def test_no_reserve_defaults_false_when_absent(self) -> None:
+        item = {k: v for k, v in _SOLD_ITEM.items() if k != "no_reserve"}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.no_reserve is False
+
+    def test_color_none_when_no_color_in_sub_title(self) -> None:
+        item = {**_SOLD_ITEM, "sub_title": "~6,700 Miles, 520-hp Flat-6, Unmodified"}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.color is None
+
+    def test_location_none_when_absent(self) -> None:
+        item = {k: v for k, v in _SOLD_ITEM.items() if k != "location"}
+        listing, _ = parse_auction(item)
+        assert listing is not None
+        assert listing.location is None
+
 
 # ─── Fixture-based tests ──────────────────────────────────────────────────────
 
@@ -246,6 +277,10 @@ class TestExtractFromFixture:
         assert first.sold_price is not None and first.sold_price > 0
         assert first.year >= 2010
         assert first.source_url.startswith("https://carsandbids.com/auctions/")
+        # New fields extracted from fixture (first sold item: id=9eNla8xk)
+        assert first.transmission == 1
+        assert first.location == "Elmwood Park, IL 60707"
+        assert first.no_reserve is False
 
     def test_parsed_prices_are_sane(self, porsche_911_gt3_auctions: list[dict]) -> None:
         prices = [
@@ -284,7 +319,7 @@ async def test_scraper_returns_listings(
 ) -> None:
     """Scraper returns parsed listings from fixture data."""
     mock_fetch.return_value = porsche_911_gt3_auctions
-    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche-911-gt3"])
+    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche"])
     listings = await scraper.scrape()
     assert mock_fetch.called
     assert len(listings) > 0
@@ -297,7 +332,7 @@ async def test_scraper_stops_on_cancel(mock_fetch: AsyncMock) -> None:
     cancel_event.set()
     scraper = CarsAndBidsScraper(
         _make_session(), None,
-        selected_keys=["porsche-911-gt3", "ferrari-458"],
+        selected_keys=["porsche", "ferrari"],
         cancel_event=cancel_event,
     )
     listings = await scraper.scrape()
@@ -309,7 +344,7 @@ async def test_scraper_stops_on_cancel(mock_fetch: AsyncMock) -> None:
 async def test_scraper_handles_fetch_error(mock_fetch: AsyncMock) -> None:
     """Errors from _fetch_search_results are caught and don't crash the scraper."""
     mock_fetch.side_effect = Exception("playwright error")
-    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche-911-gt3"])
+    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche"])
     listings = await scraper.scrape()
     assert listings == []
 
@@ -321,7 +356,7 @@ async def test_scraper_deduplicates_within_run(
 ) -> None:
     """Duplicate auction IDs across calls are deduplicated within a scrape run."""
     mock_fetch.return_value = porsche_911_gt3_auctions
-    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche-911-gt3"])
+    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche"])
     listings = await scraper.scrape()
     urls = [l.source_url for l in listings]
     assert len(urls) == len(set(urls)), "Duplicate source URLs in a single scrape run"
@@ -335,7 +370,7 @@ async def test_scraper_skips_unsold(mock_fetch: AsyncMock) -> None:
         {**_SOLD_ITEM, "id": "unsold1", "status": "reserve_not_met", "sale_amount": None},
     ]
     mock_fetch.return_value = items
-    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche-911-gt3"])
+    scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche"])
     listings = await scraper.scrape()
     assert len(listings) == 1
     assert listings[0].source_url == "https://carsandbids.com/auctions/sold1/"
