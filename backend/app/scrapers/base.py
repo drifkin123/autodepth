@@ -114,47 +114,50 @@ class BaseScraper(ABC):
         )
         return result.scalar_one_or_none() is not None
 
+    def _build_vehicle_sale(self, listing: ScrapedListing, car: Car | None) -> VehicleSale:
+        """Construct a VehicleSale from a scraped listing and optional catalog match."""
+        return VehicleSale(
+            car_id=car.id if car else None,
+            make=listing.make or (car.make if car else None),
+            model=listing.model or (car.model if car else None),
+            trim=listing.trim or (car.trim if car else None),
+            source=listing.source,
+            source_url=listing.source_url,
+            sale_type=listing.sale_type,
+            year=listing.year,
+            mileage=listing.mileage,
+            color=listing.color,
+            asking_price=listing.asking_price,
+            sold_price=listing.sold_price,
+            is_sold=listing.is_sold,
+            listed_at=listing.listed_at,
+            sold_at=listing.sold_at,
+            condition_notes=listing.condition_notes,
+            options=listing.options,
+            raw_data=listing.raw_data,
+            vin=listing.vin,
+            transmission=listing.transmission,
+            no_reserve=listing.no_reserve,
+            body_style=listing.body_style,
+            fuel_type=listing.fuel_type,
+            location=listing.location,
+            stock_type=listing.stock_type,
+        )
+
     async def save_listing(self, listing: ScrapedListing) -> bool:
         """Match, deduplicate, and persist a listing. Returns True if inserted."""
-        car = await self.match_car(listing.raw_title)
-
         if listing.is_sold:
             # Auction records are immutable: skip if already present.
+            # Deduplicate before match_car to avoid a wasted DB query.
             if await self.deduplicate(listing.source_url):
                 return False
-
-            sale = VehicleSale(
-                car_id=car.id if car else None,
-                make=listing.make or (car.make if car else None),
-                model=listing.model or (car.model if car else None),
-                trim=listing.trim or (car.trim if car else None),
-                source=listing.source,
-                source_url=listing.source_url,
-                sale_type=listing.sale_type,
-                year=listing.year,
-                mileage=listing.mileage,
-                color=listing.color,
-                asking_price=listing.asking_price,
-                sold_price=listing.sold_price,
-                is_sold=listing.is_sold,
-                listed_at=listing.listed_at,
-                sold_at=listing.sold_at,
-                condition_notes=listing.condition_notes,
-                options=listing.options,
-                raw_data=listing.raw_data,
-                vin=listing.vin,
-                transmission=listing.transmission,
-                no_reserve=listing.no_reserve,
-                body_style=listing.body_style,
-                fuel_type=listing.fuel_type,
-                location=listing.location,
-                stock_type=listing.stock_type,
-            )
-            self.session.add(sale)
+            car = await self.match_car(listing.raw_title)
+            self.session.add(self._build_vehicle_sale(listing, car))
             return True
         else:
             # Active listing: upsert — update price/mileage/last_seen_at if
             # already known, or insert fresh. Always record a snapshot.
+            car = await self.match_car(listing.raw_title)
             scraped_at = datetime.now(timezone.utc)
             is_duplicate = await self.deduplicate(listing.source_url)
 
@@ -178,34 +181,7 @@ class BaseScraper(ABC):
                 )
                 return False
             else:
-                sale = VehicleSale(
-                    car_id=car.id if car else None,
-                    make=listing.make or (car.make if car else None),
-                    model=listing.model or (car.model if car else None),
-                    trim=listing.trim or (car.trim if car else None),
-                    source=listing.source,
-                    source_url=listing.source_url,
-                    sale_type=listing.sale_type,
-                    year=listing.year,
-                    mileage=listing.mileage,
-                    color=listing.color,
-                    asking_price=listing.asking_price,
-                    sold_price=listing.sold_price,
-                    is_sold=listing.is_sold,
-                    listed_at=listing.listed_at,
-                    sold_at=listing.sold_at,
-                    condition_notes=listing.condition_notes,
-                    options=listing.options,
-                    raw_data=listing.raw_data,
-                    vin=listing.vin,
-                    transmission=listing.transmission,
-                    no_reserve=listing.no_reserve,
-                    body_style=listing.body_style,
-                    fuel_type=listing.fuel_type,
-                    location=listing.location,
-                    stock_type=listing.stock_type,
-                )
-                self.session.add(sale)
+                self.session.add(self._build_vehicle_sale(listing, car))
                 return True
 
     async def run(self) -> tuple[int, int]:
