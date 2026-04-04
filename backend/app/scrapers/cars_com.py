@@ -121,15 +121,14 @@ class CarsComScraper(BaseScraper):
             # For tracked makes: discover model slugs then scrape each make+model combo.
             # For untracked makes: fall back to make-only scraping.
             if key in CARS_COM_TRACKED_MODELS:
+                discovery_url = build_search_url(make_slug, page=1)
                 await self._emit("progress",
-                    f"[{i}/{len(urls)}] {label}: discovering models…")
+                    f"[{i}/{len(urls)}] {label}: discovering models — {discovery_url}")
                 try:
-                    discovery_html = await fetch_page(
-                        build_search_url(make_slug, page=1)
-                    )
+                    discovery_html = await fetch_page(discovery_url)
                 except Exception as exc:
                     await self._emit("error",
-                        f"[{i}/{len(urls)}] {label} model discovery: {exc}")
+                        f"[{i}/{len(urls)}] {label} model discovery failed — {discovery_url} — {exc}")
                     continue
                 available = extract_model_options_from_html(discovery_html, make_slug)
                 model_targets = get_tracked_model_slugs(key, available)
@@ -155,12 +154,12 @@ class CarsComScraper(BaseScraper):
                         break
                     search_url = build_search_url(make_slug, model_slug, page=page_num)
                     await self._emit("progress",
-                        f"[{i}/{len(urls)}] {combo_label} (p{page_num})…")
+                        f"[{i}/{len(urls)}] {combo_label} (p{page_num}) — {search_url}")
                     try:
                         html = await fetch_page(search_url)
                     except Exception as exc:
                         await self._emit("error",
-                            f"[{i}/{len(urls)}] {combo_label} p{page_num}: {exc}")
+                            f"[{i}/{len(urls)}] {combo_label} p{page_num} failed — {search_url} — {exc}")
                         break
                     items = extract_listings_from_html(html)
                     if not items:
