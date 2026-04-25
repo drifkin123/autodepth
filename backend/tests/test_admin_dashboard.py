@@ -31,5 +31,8 @@ async def test_admin_dashboard_is_ingestion_only() -> None:
     assert "Auction Lots" in html
     assert "Source Health" in html
     assert "Request Logs" in html
+    assert "<th>Target</th>" in html
+    assert "<th>Total</th>" in html
+    assert "<th>Skipped</th>" in html
     assert "Anomalies" in html
     assert "triggerScrape" in html

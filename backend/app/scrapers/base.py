@@ -1,5 +1,6 @@
 """Shared interface and persistence utilities for auction scrapers."""
 
+import logging
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ from app.settings import settings
 
 if TYPE_CHECKING:
     from app.broadcast import ScrapeBroadcaster
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -129,6 +132,22 @@ class BaseScraper(ABC):
                 metadata_json=metadata_json or {},
             )
         )
+        await self.session.commit()
+        logger.info(
+            "scrape_request source=%s action=%s outcome=%s status=%s attempt=%s "
+            "duration_ms=%s raw_items=%s parsed_lots=%s skips=%s metadata=%s url=%s",
+            self.source,
+            action,
+            outcome,
+            status_code,
+            attempt,
+            duration_ms,
+            raw_item_count,
+            parsed_lot_count,
+            skip_counts or {},
+            metadata_json or {},
+            url,
+        )
 
     async def record_anomaly(
         self,
@@ -150,6 +169,17 @@ class BaseScraper(ABC):
                 url=url,
                 metadata_json=metadata_json or {},
             )
+        )
+        await self.session.commit()
+        log_method = logger.error if severity == "critical" else logger.warning
+        log_method(
+            "scrape_anomaly source=%s severity=%s code=%s message=%s metadata=%s url=%s",
+            self.source,
+            severity,
+            code,
+            message,
+            metadata_json or {},
+            url,
         )
         await self._emit(
             "warning" if severity != "critical" else "error",
@@ -288,7 +318,9 @@ class BaseScraper(ABC):
         self.session.add(scrape_run)
         await self.session.flush()
         self.current_run_id = scrape_run.id
+        await self.session.commit()
         await self.prune_old_request_logs()
+        await self.session.commit()
 
         records_found = 0
         records_inserted = 0
