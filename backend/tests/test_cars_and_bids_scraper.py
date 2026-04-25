@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,7 +21,6 @@ from app.scrapers.cars_and_bids import (
     get_all_url_keys,
     get_url_entries,
 )
-from app.scrapers.makes import CAB_MAKES
 from app.scrapers.cars_and_bids_parser import (
     SOURCE,
     build_source_url,
@@ -40,11 +39,13 @@ _SOLD_ITEM = {
     "status": "sold",
     "sale_amount": 155500,
     "current_bid": 155500,
+    "bid_count": 18,
     "mileage": "6,700 Miles",
     "auction_end": "2026-01-22T18:32:47.781+00:00",
     "transmission": 2,
     "location": "Los Angeles, CA 90001",
     "no_reserve": False,
+    "main_photo": "https://media.carsandbids.com/cdn-cgi/image/example.jpg",
 }
 
 
@@ -61,7 +62,7 @@ def porsche_911_gt3_auctions() -> list[dict]:
 def test_get_all_url_keys_nonempty() -> None:
     keys = get_all_url_keys()
     assert len(keys) > 0
-    assert "porsche" in keys
+    assert "all" in keys
 
 
 def test_get_url_entries_structure() -> None:
@@ -72,9 +73,8 @@ def test_get_url_entries_structure() -> None:
 
 
 def test_cab_urls_registry() -> None:
-    assert len(CAB_MAKES) > 0
-    for key, label, query in CAB_MAKES:
-        assert key and label and query
+    entries = get_url_entries()
+    assert entries == [{"key": "all", "label": "All closed auctions", "query": ""}]
 
 
 # ─── parse_year ──────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ class TestParseSoldDate:
     def test_utc_conversion(self) -> None:
         dt = parse_sold_date("2026-03-15T12:00:00.000+00:00")
         assert dt is not None
-        assert dt.tzinfo == timezone.utc
+        assert dt.tzinfo == UTC
 
 
 # ─── build_source_url ────────────────────────────────────────────────────────
@@ -160,6 +160,13 @@ class TestParseAuction:
         assert listing.year == 2019
         assert listing.sold_price == 155500
         assert listing.asking_price == 155500
+        assert listing.auction_status == "sold"
+        assert listing.high_bid == 155500
+        assert listing.bid_count == 18
+        assert listing.source_auction_id == "abc123"
+        assert listing.title == _SOLD_ITEM["title"]
+        assert listing.subtitle == _SOLD_ITEM["sub_title"]
+        assert listing.image_urls == ["https://media.carsandbids.com/cdn-cgi/image/example.jpg"]
         assert listing.mileage == 6700
         assert listing.source_url == "https://carsandbids.com/auctions/abc123/"
         assert listing.transmission == 2
@@ -167,11 +174,23 @@ class TestParseAuction:
         assert listing.no_reserve is False
         assert listing.color == "Lizard Green"
 
-    def test_skips_reserve_not_met(self) -> None:
-        item = {**_SOLD_ITEM, "status": "reserve_not_met", "sale_amount": None}
+    def test_reserve_not_met_included_with_high_bid_only(self) -> None:
+        item = {
+            **_SOLD_ITEM,
+            "id": "unsold1",
+            "status": "reserve_not_met",
+            "sale_amount": None,
+            "current_bid": 141000,
+        }
         listing, reason = parse_auction(item)
-        assert listing is None
-        assert reason == "not_sold"
+        assert listing is not None
+        assert reason == ""
+        assert listing.auction_status == "reserve_not_met"
+        assert listing.is_sold is False
+        assert listing.sold_price is None
+        assert listing.high_bid == 141000
+        assert listing.asking_price == 141000
+        assert listing.source_url == "https://carsandbids.com/auctions/unsold1/"
 
     def test_skips_no_id(self) -> None:
         item = {**_SOLD_ITEM, "id": ""}
@@ -192,7 +211,7 @@ class TestParseAuction:
         assert reason == "no_year"
 
     def test_skips_no_price(self) -> None:
-        item = {**_SOLD_ITEM, "sale_amount": None}
+        item = {**_SOLD_ITEM, "sale_amount": None, "current_bid": None}
         listing, reason = parse_auction(item)
         assert listing is None
         assert reason == "no_price"
@@ -286,7 +305,7 @@ class TestExtractFromFixture:
         prices = [
             parse_auction(a)[0].sold_price
             for a in porsche_911_gt3_auctions
-            if parse_auction(a)[0] is not None
+            if parse_auction(a)[0] is not None and parse_auction(a)[0].sold_price is not None
         ]
         assert len(prices) > 0
         # 911 GT3s should all be > $50k
@@ -358,19 +377,28 @@ async def test_scraper_deduplicates_within_run(
     mock_fetch.return_value = porsche_911_gt3_auctions
     scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche"])
     listings = await scraper.scrape()
-    urls = [l.source_url for l in listings]
+    urls = [listing.source_url for listing in listings]
     assert len(urls) == len(set(urls)), "Duplicate source URLs in a single scrape run"
 
 
 @patch.object(CarsAndBidsScraper, "_fetch_search_results", new_callable=AsyncMock)
-async def test_scraper_skips_unsold(mock_fetch: AsyncMock) -> None:
-    """Only sold auctions are returned; reserve-not-met auctions are excluded."""
+async def test_scraper_keeps_unsold_with_high_bid(mock_fetch: AsyncMock) -> None:
+    """Sold and reserve-not-met closed auctions are returned."""
     items = [
         {**_SOLD_ITEM, "id": "sold1", "status": "sold", "sale_amount": 100000},
-        {**_SOLD_ITEM, "id": "unsold1", "status": "reserve_not_met", "sale_amount": None},
+        {
+            **_SOLD_ITEM,
+            "id": "unsold1",
+            "status": "reserve_not_met",
+            "sale_amount": None,
+            "current_bid": 90000,
+        },
     ]
     mock_fetch.return_value = items
     scraper = CarsAndBidsScraper(_make_session(), None, selected_keys=["porsche"])
     listings = await scraper.scrape()
-    assert len(listings) == 1
+    assert len(listings) == 2
     assert listings[0].source_url == "https://carsandbids.com/auctions/sold1/"
+    assert listings[1].source_url == "https://carsandbids.com/auctions/unsold1/"
+    assert listings[1].auction_status == "reserve_not_met"
+    assert listings[1].high_bid == 90000

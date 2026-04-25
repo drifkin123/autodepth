@@ -76,10 +76,14 @@ export const MODELS_BY_MAKE: Record<SupportedMake, string[]> = {
 export const SALE_SOURCES = [
   'bring_a_trailer',
   'cars_and_bids',
-  'rm_sotheby',
   'cars_com',
   'dealer',
   'private_seller',
+] as const
+
+export const ACTIVE_SCRAPER_SOURCES = [
+  'bring_a_trailer',
+  'cars_and_bids',
 ] as const
 
 /**
@@ -89,7 +93,6 @@ export const SALE_SOURCES = [
 export const AUCTION_SOURCES = [
   'bring_a_trailer',
   'cars_and_bids',
-  'rm_sotheby',
 ] as const
 
 /**

@@ -2,7 +2,8 @@
 
 Covers the 5 key scenarios:
 1. is_sold=False, new source_url → VehicleSale inserted, ListingSnapshot inserted, returns True
-2. is_sold=False, duplicate source_url → VehicleSale updated, new ListingSnapshot inserted, returns False
+2. is_sold=False, duplicate source_url → VehicleSale updated, new ListingSnapshot
+   inserted, returns False
 3. is_sold=True, new source_url → VehicleSale inserted, no ListingSnapshot, returns True
 4. is_sold=True, duplicate source_url → skipped, returns False
 5. No car match → listing saved with car_id=None, make/model/trim from listing fields
@@ -11,16 +12,16 @@ Covers the 5 key scenarios:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.models.auction_image import AuctionImage
 from app.models.car import Car
 from app.models.listing_snapshot import ListingSnapshot
 from app.models.vehicle_sale import VehicleSale
 from app.scrapers.base import BaseScraper, ScrapedListing
-
 
 # ─── Concrete subclass for testing ───────────────────────────────────────────
 
@@ -50,12 +51,20 @@ def _make_listing(
         asking_price=120_000,
         sold_price=118_000 if is_sold else None,
         is_sold=is_sold,
-        listed_at=datetime(2024, 1, 15, tzinfo=timezone.utc),
-        sold_at=datetime(2024, 1, 15, tzinfo=timezone.utc) if is_sold else None,
+        listed_at=datetime(2024, 1, 15, tzinfo=UTC),
+        sold_at=datetime(2024, 1, 15, tzinfo=UTC) if is_sold else None,
         mileage=5000,
         make=make,
         model=model,
         trim=trim,
+        source_auction_id="auction-123" if is_sold else None,
+        auction_status="sold" if is_sold else "unknown",
+        high_bid=118_000 if is_sold else None,
+        bid_count=12 if is_sold else None,
+        title="2020 Porsche 911 GT3",
+        subtitle="5,000 miles, manual",
+        image_urls=["https://images.example.com/auction-123.jpg"] if is_sold else [],
+        vehicle_details={"transmission": "Manual"} if is_sold else {},
     )
 
 
@@ -86,7 +95,7 @@ class TestSaveListingActiveListing:
 
     @pytest.mark.asyncio
     async def test_new_active_listing_inserts_sale_and_snapshot_and_returns_true(self) -> None:
-        """Case 1: new source_url + is_sold=False → insert VehicleSale + ListingSnapshot, return True."""
+        """Case 1: new active listing inserts a sale and snapshot."""
         session = _make_session()
         car = _make_car()
 
@@ -119,8 +128,10 @@ class TestSaveListingActiveListing:
         assert inserted_snapshot.mileage == listing.mileage
 
     @pytest.mark.asyncio
-    async def test_duplicate_active_listing_updates_sale_and_inserts_snapshot_returns_false(self) -> None:
-        """Case 2: duplicate source_url + is_sold=False → UPDATE existing + new snapshot, return False."""
+    async def test_duplicate_active_listing_updates_sale_and_snapshot_returns_false(
+        self,
+    ) -> None:
+        """Case 2: duplicate active listing updates sale and adds a snapshot."""
         session = _make_session()
         car = _make_car()
 
@@ -139,7 +150,9 @@ class TestSaveListingActiveListing:
         snapshot_objects = [o for o in added_objects if isinstance(o, ListingSnapshot)]
         sale_objects = [o for o in added_objects if isinstance(o, VehicleSale)]
 
-        assert len(snapshot_objects) == 1, "Expected one ListingSnapshot added for duplicate active listing"
+        assert len(snapshot_objects) == 1, (
+            "Expected one ListingSnapshot added for duplicate active listing"
+        )
         assert len(sale_objects) == 0, "No new VehicleSale should be inserted for a duplicate"
 
         # An UPDATE should have been executed
@@ -171,17 +184,28 @@ class TestSaveListingSoldAuction:
 
         added_objects = [call_args.args[0] for call_args in session.add.call_args_list]
         sale_objects = [o for o in added_objects if isinstance(o, VehicleSale)]
+        image_objects = [o for o in added_objects if isinstance(o, AuctionImage)]
         snapshot_objects = [o for o in added_objects if isinstance(o, ListingSnapshot)]
 
         assert len(sale_objects) == 1, "Expected exactly one VehicleSale"
+        assert len(image_objects) == 1, "Expected one AuctionImage for the auction image URL"
         assert len(snapshot_objects) == 0, "No snapshot should be created for sold auctions"
 
         assert sale_objects[0].car_id == car.id
         assert sale_objects[0].is_sold is True
+        assert sale_objects[0].auction_status == "sold"
+        assert sale_objects[0].high_bid == 118_000
+        assert sale_objects[0].bid_count == 12
+        assert sale_objects[0].source_auction_id == "auction-123"
+        assert sale_objects[0].title == "2020 Porsche 911 GT3"
+        assert sale_objects[0].subtitle == "5,000 miles, manual"
+        assert sale_objects[0].image_count == 1
+        assert sale_objects[0].vehicle_details == {"transmission": "Manual"}
+        assert image_objects[0].image_url == "https://images.example.com/auction-123.jpg"
 
     @pytest.mark.asyncio
-    async def test_duplicate_sold_auction_skips_and_returns_false(self) -> None:
-        """Case 4: duplicate source_url + is_sold=True → skip entirely, return False."""
+    async def test_duplicate_sold_auction_updates_and_returns_false(self) -> None:
+        """Case 4: duplicate sold auction updates existing auction facts."""
         session = _make_session()
         car = _make_car()
 
@@ -194,9 +218,11 @@ class TestSaveListingSoldAuction:
 
         assert result is False
 
-        # Nothing should be added or executed beyond the deduplicate check
-        session.add.assert_not_called()
-        session.execute.assert_not_called()
+        added_objects = [call_args.args[0] for call_args in session.add.call_args_list]
+        image_objects = [o for o in added_objects if isinstance(o, AuctionImage)]
+
+        assert len(image_objects) == 1
+        session.execute.assert_called()
 
 
 class TestSaveListingNoCarMatch:

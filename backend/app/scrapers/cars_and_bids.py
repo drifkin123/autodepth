@@ -4,17 +4,17 @@ Cars & Bids uses a signed JSON API whose signature is computed client-side in th
 browser. We use Playwright to render the past-auctions search page, intercept the
 authenticated API responses, and extract structured auction data — no HTML parsing.
 
-The scraper navigates to the search page once per search term, types the query,
-waits for the API responses (one per page of results), and paginates by clicking
-"Next" until MAX_PAGES is reached or no more results are available.
+The scraper navigates to the past-auctions page, captures closed-auction API
+responses, and paginates by clicking "Next" until no more results are available.
 
-Only auctions with status == "sold" are ingested; reserve-not-met auctions are
-skipped so that unconfirmed hammer prices don't contaminate the depreciation model.
+Sold and reserve-not-met auctions are ingested. Only confirmed sold prices are
+used by the depreciation model.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from app.scrapers.base import BaseScraper, ScrapedListing
 from app.scrapers.cars_and_bids_parser import SOURCE, parse_auction
@@ -29,15 +29,16 @@ _USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
-MAX_PAGES_PER_SEARCH = 20
+GLOBAL_CAB_ENTRY: tuple[str, str, str] = ("all", "All closed auctions", "")
 
 
 def get_all_url_keys() -> list[str]:
-    return [key for key, _, _ in CAB_MAKES]
+    return [GLOBAL_CAB_ENTRY[0]]
 
 
 def get_url_entries() -> list[dict[str, str]]:
-    return [{"key": key, "label": label, "query": query} for key, label, query in CAB_MAKES]
+    key, label, query = GLOBAL_CAB_ENTRY
+    return [{"key": key, "label": label, "query": query}]
 
 
 class CarsAndBidsScraper(BaseScraper):
@@ -53,8 +54,14 @@ class CarsAndBidsScraper(BaseScraper):
 
     def _get_entries(self) -> list[tuple[str, str, str]]:
         if self._selected_keys is None:
-            return list(CAB_MAKES)
-        return [(k, l, q) for k, l, q in CAB_MAKES if k in self._selected_keys]
+            return [GLOBAL_CAB_ENTRY]
+        if "all" in self._selected_keys:
+            return [GLOBAL_CAB_ENTRY]
+        return [
+            (key, label, query)
+            for key, label, query in CAB_MAKES
+            if key in self._selected_keys
+        ]
 
     async def _fetch_search_results(self, search_query: str) -> list[dict]:
         """Use Playwright to search C&B and return raw auction dicts.
@@ -72,9 +79,9 @@ class CarsAndBidsScraper(BaseScraper):
             context = await browser.new_context(user_agent=_USER_AGENT)
             page = await context.new_page()
 
-            async def on_response(response: "Response") -> None:  # type: ignore[name-defined]
+            async def on_response(response: Any) -> None:
                 url = response.url
-                if "/v2/autos/auctions" in url and "search=" in url and "status=closed" in url:
+                if "/v2/autos/auctions" in url and "status=closed" in url:
                     try:
                         captured.append(await response.json())
                     except Exception:
@@ -84,21 +91,23 @@ class CarsAndBidsScraper(BaseScraper):
             await page.goto(_PAST_AUCTIONS_URL, wait_until="networkidle", timeout=60_000)
             await page.wait_for_timeout(2_000)
 
-            inp = await page.query_selector("input.form-control, input[type=search]")
-            if not inp:
-                logger.warning("C&B: search input not found — UI may have changed")
-                await browser.close()
-                return []
+            if search_query:
+                inp = await page.query_selector("input.form-control, input[type=search]")
+                if not inp:
+                    logger.warning("C&B: search input not found — UI may have changed")
+                    await browser.close()
+                    return []
 
-            await inp.click()
-            await inp.fill(search_query)
-            await page.keyboard.press("Enter")
-            await page.wait_for_timeout(5_000)
+                await inp.click()
+                await inp.fill(search_query)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(5_000)
 
             if captured:
                 all_auctions.extend(captured[-1].get("auctions", []))
 
-            for _ in range(MAX_PAGES_PER_SEARCH - 1):
+            seen_response_count = len(captured)
+            while True:
                 prev = len(captured)
                 next_btn = await page.query_selector(
                     '[aria-label="Next"], .next, button.pagination-next, '
@@ -112,7 +121,13 @@ class CarsAndBidsScraper(BaseScraper):
                     if len(captured) > prev:
                         break
                 if len(captured) > prev:
-                    all_auctions.extend(captured[-1].get("auctions", []))
+                    auctions = captured[-1].get("auctions", [])
+                    if not auctions:
+                        break
+                    all_auctions.extend(auctions)
+                    seen_response_count = len(captured)
+                elif len(captured) == seen_response_count:
+                    break
 
             await browser.close()
 

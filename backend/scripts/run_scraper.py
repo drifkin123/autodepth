@@ -19,6 +19,7 @@ import argparse
 
 from app.db import async_session_factory
 from app.scrapers.bring_a_trailer import BringATrailerScraper
+from app.scrapers.cars_and_bids import CarsAndBidsScraper
 from app.services.scraper import run_all_scrapers
 
 logging.basicConfig(
@@ -28,6 +29,7 @@ logging.basicConfig(
 
 SCRAPER_MAP = {
     "bring_a_trailer": BringATrailerScraper,
+    "cars_and_bids": CarsAndBidsScraper,
 }
 
 

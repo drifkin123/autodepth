@@ -49,15 +49,14 @@ class CarsAndBidsUrlEntry(BaseModel):
 
 class TriggerRequest(BaseModel):
     bat_selected_keys: list[str] | None = None
-    cars_com_selected_keys: list[str] | None = None
     carsandbids_selected_keys: list[str] | None = None
 
 
 class SaleOut(BaseModel):
     id: uuid.UUID
-    car_make: str
-    car_model: str
-    car_trim: str
+    car_make: str | None
+    car_model: str | None
+    car_trim: str | None
     source: str
     source_url: str
     sale_type: str
@@ -66,6 +65,12 @@ class SaleOut(BaseModel):
     color: str | None
     asking_price: int
     sold_price: int | None
+    auction_status: str | None = None
+    high_bid: int | None = None
+    bid_count: int | None = None
+    title: str | None = None
+    subtitle: str | None = None
+    image_count: int = 0
     is_sold: bool
     listed_at: datetime
     sold_at: datetime | None

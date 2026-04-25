@@ -11,14 +11,12 @@ HTTP fetching is tested via a mocked httpx client.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bat_porsche_911_gt3.html"
 
 from app.scrapers.bat_parser import (
     extract_items_from_html,
@@ -37,6 +35,7 @@ from app.scrapers.bring_a_trailer import (
 )
 from app.scrapers.makes import BAT_MAKES
 
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "bat_porsche_911_gt3.html"
 
 # ─── Sample BaT JSON items (mirrors real site structure) ─────────────────────
 
@@ -44,6 +43,7 @@ SOLD_ITEM = {
     "active": False,
     "current_bid": 229000,
     "current_bid_formatted": "USD $229,000",
+    "bids": 42,
     "sold_text": "Sold for USD $229,000 <span> on 3/29/26 </span>",
     "title": "2019 Porsche 911 GT3 RS Weissach",
     "url": "https://bringatrailer.com/listing/2019-porsche-911-gt3-rs-weissach-97/",
@@ -51,6 +51,7 @@ SOLD_ITEM = {
     "year": None,
     "noreserve": False,
     "country": "United States",
+    "image": "https://bringatrailer.com/wp-content/uploads/example.jpg",
 }
 
 SOLD_ITEM_2 = {
@@ -76,10 +77,12 @@ SOLD_ITEM_WITH_MILEAGE = {
 RESERVE_NOT_MET_ITEM = {
     "active": False,
     "current_bid": 189000,
+    "bids": 31,
     "sold_text": "Bid to USD $189,000 <span> on 3/27/26 </span>",
     "title": "11k-Mile 2016 Porsche 911 GT3 RS",
     "url": "https://bringatrailer.com/listing/2016-porsche-911-gt3-rs-103/",
     "id": 110742918,
+    "image": "https://bringatrailer.com/wp-content/uploads/unsold.jpg",
 }
 
 PARTS_ITEM = {
@@ -144,7 +147,9 @@ def _mock_http_context(response):
 
 def _setup_mock_client(MockClient, mock_response_or_side_effect):
     mock_client = AsyncMock()
-    if callable(mock_response_or_side_effect) and not isinstance(mock_response_or_side_effect, httpx.Response):
+    if callable(mock_response_or_side_effect) and not isinstance(
+        mock_response_or_side_effect, httpx.Response
+    ):
         mock_client.get = AsyncMock(side_effect=mock_response_or_side_effect)
     else:
         mock_client.get = AsyncMock(return_value=mock_response_or_side_effect)
@@ -201,7 +206,7 @@ class TestParseSoldText:
         )
         assert is_sold is True
         assert price == 229000
-        assert date == datetime(2026, 3, 29, tzinfo=timezone.utc)
+        assert date == datetime(2026, 3, 29, tzinfo=UTC)
 
     def test_sold_with_four_digit_year(self) -> None:
         is_sold, price, date = parse_sold_text(
@@ -209,7 +214,7 @@ class TestParseSoldText:
         )
         assert is_sold is True
         assert price == 100000
-        assert date == datetime(2025, 12, 15, tzinfo=timezone.utc)
+        assert date == datetime(2025, 12, 15, tzinfo=UTC)
 
     def test_reserve_not_met(self) -> None:
         is_sold, price, date = parse_sold_text(
@@ -217,7 +222,7 @@ class TestParseSoldText:
         )
         assert is_sold is False
         assert price == 189000
-        assert date == datetime(2026, 3, 27, tzinfo=timezone.utc)
+        assert date == datetime(2026, 3, 27, tzinfo=UTC)
 
     def test_empty_string(self) -> None:
         is_sold, price, date = parse_sold_text("")
@@ -264,9 +269,15 @@ class TestParseItem:
         assert listing.year == 2019
         assert listing.sold_price == 229000
         assert listing.asking_price == 229000
+        assert listing.auction_status == "sold"
+        assert listing.high_bid == 229000
+        assert listing.bid_count == 42
+        assert listing.source_auction_id == "108526570"
+        assert listing.title == SOLD_ITEM["title"]
+        assert listing.image_urls == ["https://bringatrailer.com/wp-content/uploads/example.jpg"]
         assert listing.is_sold is True
         assert listing.source_url == SOLD_ITEM["url"]
-        assert listing.sold_at == datetime(2026, 3, 29, tzinfo=timezone.utc)
+        assert listing.sold_at == datetime(2026, 3, 29, tzinfo=UTC)
         assert listing.no_reserve is False
         assert listing.location == "United States"
 
@@ -276,10 +287,18 @@ class TestParseItem:
         assert listing.mileage == 11000
         assert listing.year == 2016
 
-    def test_reserve_not_met_excluded(self) -> None:
+    def test_reserve_not_met_included_with_high_bid_only(self) -> None:
         listing, reason = parse_item(RESERVE_NOT_MET_ITEM)
-        assert listing is None
-        assert reason == "not_sold"
+        assert listing is not None
+        assert reason == ""
+        assert listing.auction_status == "reserve_not_met"
+        assert listing.is_sold is False
+        assert listing.sold_price is None
+        assert listing.high_bid == 189000
+        assert listing.asking_price == 189000
+        assert listing.bid_count == 31
+        assert listing.source_auction_id == "110742918"
+        assert listing.image_urls == ["https://bringatrailer.com/wp-content/uploads/unsold.jpg"]
 
     def test_no_year_excluded(self) -> None:
         listing, reason = parse_item(ITEM_NO_YEAR)
@@ -300,7 +319,7 @@ class TestParseItem:
     def test_four_digit_date_year(self) -> None:
         listing, _ = parse_item(SOLD_ITEM_FOUR_DIGIT_YEAR)
         assert listing is not None
-        assert listing.sold_at == datetime(2025, 12, 15, tzinfo=timezone.utc)
+        assert listing.sold_at == datetime(2025, 12, 15, tzinfo=UTC)
 
     def test_raw_data_preserved(self) -> None:
         listing, _ = parse_item(SOLD_ITEM)
@@ -416,7 +435,9 @@ class TestExtractItemsFromFixture:
     def test_has_sold_items(self, porsche_911_gt3_html: str) -> None:
         items = extract_items_from_html(porsche_911_gt3_html)
         sold = [i for i in items if i.get("sold_text", "").startswith("Sold")]
-        assert len(sold) > 0, "No confirmed sold items found in fixture — check fixture or BaT structure."
+        assert len(sold) > 0, (
+            "No confirmed sold items found in fixture — check fixture or BaT structure."
+        )
 
     def test_parse_item_from_fixture(self, porsche_911_gt3_html: str) -> None:
         items = extract_items_from_html(porsche_911_gt3_html)
@@ -433,9 +454,11 @@ class TestExtractItemsFromFixture:
         first = parsed[0]
         assert first.source == "bring_a_trailer"
         assert first.sale_type == "auction"
-        assert first.is_sold is True
-        assert first.sold_price is not None and first.sold_price > 0
-        assert first.asking_price == first.sold_price  # BaT: asking = hammer price
+        assert first.auction_status in {"sold", "reserve_not_met"}
+        assert first.high_bid is not None and first.high_bid > 0
+        if first.is_sold:
+            assert first.sold_price is not None and first.sold_price > 0
+            assert first.asking_price == first.sold_price
         assert first.year is not None and first.year >= 2000  # GT3 is post-2000
         assert first.source_url.startswith("https://bringatrailer.com/listing/")
 
@@ -444,7 +467,7 @@ class TestExtractItemsFromFixture:
         prices = []
         for item in items:
             listing, _ = parse_item(item)
-            if listing is not None:
+            if listing is not None and listing.sold_price is not None:
                 prices.append(listing.sold_price)
         assert len(prices) > 0
         # 911 GT3s should clear $50k
@@ -488,8 +511,8 @@ class TestBringATrailerScraper:
         assert len(listings) == 1
         assert listings[0].source_url == SOLD_ITEM["url"]
 
-    async def test_scrape_filters_unsold(self) -> None:
-        """Reserve-not-met items should not appear in results."""
+    async def test_scrape_keeps_unsold_auctions(self) -> None:
+        """Reserve-not-met auction lots should appear with high_bid and null sold_price."""
         html = _wrap_items_in_html([RESERVE_NOT_MET_ITEM, PARTS_ITEM])
         mock_response = httpx.Response(200, text=html, request=httpx.Request("GET", "http://test"))
 
@@ -501,7 +524,10 @@ class TestBringATrailerScraper:
             with patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock):
                 listings = await scraper.scrape()
 
-        assert len(listings) == 0
+        assert len(listings) == 1
+        assert listings[0].auction_status == "reserve_not_met"
+        assert listings[0].sold_price is None
+        assert listings[0].high_bid == 189000
 
     async def test_scrape_continues_on_http_error(self) -> None:
         """A failed URL should not abort the entire scrape."""
@@ -544,7 +570,7 @@ class TestBringATrailerScraper:
         with patch("app.scrapers.bring_a_trailer.httpx.AsyncClient") as MockClient:
             mock_client = _setup_mock_client(MockClient, mock_response)
             with patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock):
-                listings = await scraper.scrape()
+                await scraper.scrape()
 
         # Should have fetched exactly 2 URLs
         assert mock_client.get.call_count == 2
@@ -584,7 +610,7 @@ class TestBringATrailerScraper:
 
         mock_session = AsyncMock()
         scraper = BringATrailerScraper(
-            mock_session, cancel_event=cancel_event
+            mock_session, selected_keys=["porsche"], cancel_event=cancel_event
         )
 
         with patch("app.scrapers.bring_a_trailer.httpx.AsyncClient") as MockClient:
@@ -609,7 +635,7 @@ class TestBringATrailerScraper:
             with patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock):
                 await scraper.scrape()
 
-        assert mock_client.get.call_count == len(BAT_MAKES)
+        assert mock_client.get.call_count == len(BAT_MAKES) + 1
 
     async def test_scrape_returns_multiple_unique_listings(self) -> None:
         """Different items from different pages should all be returned."""
@@ -628,6 +654,6 @@ class TestBringATrailerScraper:
                 listings = await scraper.scrape()
 
         assert len(listings) == 2
-        urls = {l.source_url for l in listings}
+        urls = {listing.source_url for listing in listings}
         assert SOLD_ITEM["url"] in urls
         assert SOLD_ITEM_2["url"] in urls

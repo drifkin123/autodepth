@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.scrapers.bring_a_trailer import BringATrailerScraper
 from app.scrapers.cars_and_bids import CarsAndBidsScraper
-from app.scrapers.cars_com import CarsComScraper
 
 if TYPE_CHECKING:
     from app.broadcast import ScrapeBroadcaster
@@ -23,10 +24,9 @@ logger = logging.getLogger(__name__)
 
 async def run_all_scrapers(
     session: AsyncSession,
-    broadcaster: "ScrapeBroadcaster | None" = None,
+    broadcaster: ScrapeBroadcaster | None = None,
     *,
     bat_selected_keys: set[str] | None = None,
-    cars_com_selected_keys: set[str] | None = None,
     carsandbids_selected_keys: set[str] | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> dict[str, tuple[int, int]]:
@@ -57,28 +57,6 @@ async def run_all_scrapers(
         logger.exception("Scraper %s failed", scraper.source)
         results[scraper.source] = (-1, -1)
 
-    # ── Cars.com ──────────────────────────────────────────────────────────
-    if not (cancel_event and cancel_event.is_set()):
-        scraper_cc = CarsComScraper(
-            session,
-            broadcaster,
-            selected_keys=cars_com_selected_keys,
-            cancel_event=cancel_event,
-        )
-        logger.info("Starting scraper: %s", scraper_cc.source)
-        try:
-            found, inserted = await scraper_cc.run()
-            results[scraper_cc.source] = (found, inserted)
-            logger.info(
-                "Scraper %s complete: %d found, %d inserted",
-                scraper_cc.source,
-                found,
-                inserted,
-            )
-        except Exception:
-            logger.exception("Scraper %s failed", scraper_cc.source)
-            results[scraper_cc.source] = (-1, -1)
-
     # ── Cars & Bids ───────────────────────────────────────────────────────
     if not (cancel_event and cancel_event.is_set()):
         scraper_cab = CarsAndBidsScraper(
@@ -105,11 +83,10 @@ async def run_all_scrapers(
 
 
 async def run_scrape_job(
-    broadcaster: "ScrapeBroadcaster",
-    session_factory: "asyncio.coroutine",
+    broadcaster: ScrapeBroadcaster,
+    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
     *,
     bat_selected_keys: set[str] | None = None,
-    cars_com_selected_keys: set[str] | None = None,
     carsandbids_selected_keys: set[str] | None = None,
 ) -> None:
     """Run scrapers + depreciation model as a background task with event streaming."""
@@ -127,7 +104,6 @@ async def run_scrape_job(
                 session,
                 broadcaster,
                 bat_selected_keys=bat_selected_keys,
-                cars_com_selected_keys=cars_com_selected_keys,
                 carsandbids_selected_keys=carsandbids_selected_keys,
                 cancel_event=cancel_event,
             )
@@ -176,8 +152,8 @@ async def run_scrape_job(
 
 
 async def run_depreciation_job(
-    broadcaster: "ScrapeBroadcaster",
-    session_factory: "asyncio.coroutine",
+    broadcaster: ScrapeBroadcaster,
+    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
 ) -> None:
     """Re-run depreciation models without scraping, with event streaming."""
     from app.broadcast import ScrapeEvent

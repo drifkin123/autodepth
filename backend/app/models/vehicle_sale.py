@@ -43,6 +43,17 @@ class VehicleSale(Base):
     location: Mapped[str | None] = mapped_column(Text, nullable=True)
     stock_type: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_auction_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auction_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    high_bid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bid_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    subtitle: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_scraped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    image_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    vehicle_details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     car = relationship("Car", lazy="select")
 
@@ -53,4 +64,8 @@ class VehicleSale(Base):
         Index("ix_vehicle_sales_is_sold", "is_sold"),
         Index("ix_vehicle_sales_source_url", "source_url"),
         Index("ix_vehicle_sales_make_model_trim", "make", "model", "trim"),
+        Index("ix_vehicle_sales_source_auction_id", "source", "source_auction_id"),
+        Index("ix_vehicle_sales_source_auction_status", "source", "auction_status"),
+        Index("ix_vehicle_sales_make_model_year", "make", "model", "year"),
+        Index("ix_vehicle_sales_sold_at", "sold_at"),
     )
