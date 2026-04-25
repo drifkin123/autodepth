@@ -113,9 +113,32 @@
           <button class="primary" id="run-btn" onclick="triggerScrape()">Run Scrape</button>
           <button class="danger" id="stop-btn" onclick="stopScrape()" disabled>Stop Scrape</button>
           <button onclick="loadRuns()">Refresh Runs</button>
+          <button onclick="loadAnomalies()">Refresh Anomalies</button>
+          <button onclick="loadRequestLogs()">Refresh Request Logs</button>
           <button onclick="loadLots(1)">Refresh Lots</button>
         </div>
         <div id="feed"><div class="muted">Waiting for scrape events...</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Source Health</h2>
+      <div class="panel-body">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>State</th>
+              <th>Last Run</th>
+              <th>Last Success</th>
+              <th>Found</th>
+              <th>Inserted</th>
+              <th>Updated</th>
+              <th>Latest Anomaly</th>
+            </tr>
+          </thead>
+          <tbody id="health-body"><tr><td colspan="8" class="muted">Loading...</td></tr></tbody>
+        </table>
       </div>
     </section>
 
@@ -198,6 +221,46 @@
         </table>
       </div>
     </section>
+
+    <section class="panel">
+      <h2>Anomalies</h2>
+      <div class="panel-body">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Source</th>
+              <th>Severity</th>
+              <th>Code</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="anomalies-body"><tr><td colspan="5" class="muted">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Request Logs</h2>
+      <div class="panel-body">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Source</th>
+              <th>Action</th>
+              <th>Outcome</th>
+              <th>Status</th>
+              <th>Attempt</th>
+              <th>Raw</th>
+              <th>Parsed</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="request-logs-body"><tr><td colspan="9" class="muted">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -221,6 +284,27 @@
       document.getElementById('run-label').textContent = data.isRunning ? 'Running' : 'Idle';
       document.getElementById('run-btn').disabled = data.isRunning;
       document.getElementById('stop-btn').disabled = !data.isRunning;
+      renderHealth(data.sources || []);
+    }
+
+    function renderHealth(sources) {
+      const body = document.getElementById('health-body');
+      if (!sources.length) {
+        body.innerHTML = '<tr><td colspan="8" class="muted">No source health yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = sources.map(source => `
+        <tr>
+          <td>${esc(source.source)}</td>
+          <td><span class="badge ${source.state === 'error' || source.state === 'stale' ? 'unsold' : 'sold'}">${esc(source.state)}</span></td>
+          <td>${source.lastRunAt ? new Date(source.lastRunAt).toLocaleString() : '-'}</td>
+          <td>${source.lastSuccessAt ? new Date(source.lastSuccessAt).toLocaleString() : '-'}</td>
+          <td>${source.recordsFound}</td>
+          <td>${source.recordsInserted}</td>
+          <td>${source.recordsUpdated}</td>
+          <td>${esc(source.latestAnomalySeverity || '')} ${esc(source.latestAnomalyMessage || '')}</td>
+        </tr>
+      `).join('');
     }
 
     function connectWebSocket() {
@@ -250,6 +334,8 @@
       if (['complete', 'error', 'done'].includes(event.type)) {
         pollStatus();
         loadRuns();
+        loadAnomalies();
+        loadRequestLogs();
         loadLots(currentPage);
       }
     }
@@ -354,6 +440,50 @@
       `).join('');
     }
 
+    async function loadAnomalies() {
+      const res = await fetch('/api/admin/anomalies?limit=25');
+      if (!res.ok) return;
+      const anomalies = await res.json();
+      const body = document.getElementById('anomalies-body');
+      if (!anomalies.length) {
+        body.innerHTML = '<tr><td colspan="5" class="muted">No anomalies recorded.</td></tr>';
+        return;
+      }
+      body.innerHTML = anomalies.map(anomaly => `
+        <tr>
+          <td>${new Date(anomaly.createdAt).toLocaleString()}</td>
+          <td>${esc(anomaly.source)}</td>
+          <td><span class="badge ${anomaly.severity === 'critical' ? 'unsold' : ''}">${esc(anomaly.severity)}</span></td>
+          <td>${esc(anomaly.code)}</td>
+          <td>${esc(anomaly.message)}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadRequestLogs() {
+      const res = await fetch('/api/admin/request-logs?limit=50');
+      if (!res.ok) return;
+      const logs = await res.json();
+      const body = document.getElementById('request-logs-body');
+      if (!logs.length) {
+        body.innerHTML = '<tr><td colspan="9" class="muted">No request logs recorded.</td></tr>';
+        return;
+      }
+      body.innerHTML = logs.map(log => `
+        <tr>
+          <td>${new Date(log.createdAt).toLocaleString()}</td>
+          <td>${esc(log.source)}</td>
+          <td>${esc(log.action)}</td>
+          <td>${esc(log.outcome)}</td>
+          <td>${log.statusCode ?? '-'}</td>
+          <td>${log.attempt}</td>
+          <td>${log.rawItemCount ?? '-'}</td>
+          <td>${log.parsedLotCount ?? '-'}</td>
+          <td>${esc(log.errorMessage || '')}</td>
+        </tr>
+      `).join('');
+    }
+
     function clearFilters() {
       for (const id of [
         'filter-source',
@@ -374,6 +504,8 @@
       connectWebSocket();
       pollStatus();
       loadRuns();
+      loadAnomalies();
+      loadRequestLogs();
       loadLots(1);
       setInterval(pollStatus, 3000);
     });

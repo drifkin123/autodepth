@@ -10,7 +10,14 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import Base
-from app.models import AuctionImage, AuctionLot, CrawlState, ScrapeRun  # noqa: F401
+from app.models import (  # noqa: F401
+    AuctionImage,
+    AuctionLot,
+    CrawlState,
+    ScrapeAnomaly,
+    ScrapeRequestLog,
+    ScrapeRun,
+)
 
 TEST_DATABASE_URL: str = os.environ.get(
     "TEST_DATABASE_URL",
@@ -35,8 +42,8 @@ async def integration_session() -> AsyncSession:  # type: ignore[misc]
         yield session
         await session.execute(
             text(
-                "TRUNCATE TABLE auction_images, auction_lots, scrape_runs, crawl_state "
-                "RESTART IDENTITY CASCADE"
+                "TRUNCATE TABLE scrape_request_logs, scrape_anomalies, auction_images, "
+                "auction_lots, scrape_runs, crawl_state RESTART IDENTITY CASCADE"
             )
         )
         await session.commit()

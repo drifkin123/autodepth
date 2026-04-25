@@ -29,4 +29,7 @@ async def test_admin_dashboard_is_ingestion_only() -> None:
     assert "Prediction" not in html
     assert "Cars.com" not in html
     assert "Auction Lots" in html
+    assert "Source Health" in html
+    assert "Request Logs" in html
+    assert "Anomalies" in html
     assert "triggerScrape" in html

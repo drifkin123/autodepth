@@ -14,19 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 from app.scrapers.cars_and_bids_parser import SOURCE, parse_auction
+from app.scrapers.runtime import BROWSER_HEADERS, RetryPolicy, is_block_status, polite_delay_seconds
 
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://carsandbids.com"
 _PAST_AUCTIONS_URL = f"{_BASE_URL}/past-auctions/"
-_USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+_USER_AGENT = BROWSER_HEADERS["User-Agent"]
+_RETRY_POLICY = RetryPolicy(max_attempts=2, base_delay_seconds=3.0, max_delay_seconds=20.0)
 
 GLOBAL_CAB_ENTRY: tuple[str, str, str] = ("all", "All closed auctions", "")
 
@@ -71,19 +71,77 @@ class CarsAndBidsScraper(BaseScraper):
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(user_agent=_USER_AGENT)
+            context = await browser.new_context(
+                user_agent=_USER_AGENT,
+                extra_http_headers={
+                    key: value for key, value in BROWSER_HEADERS.items() if key != "User-Agent"
+                },
+                locale="en-US",
+            )
             page = await context.new_page()
 
             async def on_response(response: Any) -> None:
                 url = response.url
                 if "/v2/autos/auctions" in url and "status=closed" in url:
+                    started = time.perf_counter()
+                    if is_block_status(response.status):
+                        await self.record_request_log(
+                            url=url,
+                            action="api_response",
+                            attempt=1,
+                            status_code=response.status,
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            outcome="blocked",
+                            error_type="BlockedResponse",
+                            error_message=f"Source returned {response.status}",
+                        )
+                        await self.record_anomaly(
+                            severity="critical",
+                            code="blocked_response",
+                            message="Cars & Bids blocked or rate-limited an API response.",
+                            url=url,
+                            metadata_json={"status_code": response.status},
+                        )
+                        return
                     try:
-                        captured.append(await response.json())
-                    except Exception:
-                        pass
+                        payload = await response.json()
+                        captured.append(payload)
+                        await self.record_request_log(
+                            url=url,
+                            action="api_response",
+                            attempt=1,
+                            status_code=response.status,
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            outcome="success",
+                            raw_item_count=len(payload.get("auctions", [])),
+                            metadata_json={
+                                "count": payload.get("count"),
+                                "total": payload.get("total"),
+                            },
+                        )
+                    except Exception as exc:
+                        await self.record_request_log(
+                            url=url,
+                            action="api_response",
+                            attempt=1,
+                            status_code=response.status,
+                            duration_ms=int((time.perf_counter() - started) * 1000),
+                            outcome="error",
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                        )
 
             page.on("response", on_response)
+            started = time.perf_counter()
             await page.goto(_PAST_AUCTIONS_URL, wait_until="networkidle", timeout=60_000)
+            await self.record_request_log(
+                url=_PAST_AUCTIONS_URL,
+                action="playwright_goto",
+                attempt=1,
+                status_code=200,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                outcome="success",
+            )
             await page.wait_for_timeout(2_000)
 
             if search_query:
@@ -96,7 +154,7 @@ class CarsAndBidsScraper(BaseScraper):
                 await inp.click()
                 await inp.fill(search_query)
                 await page.keyboard.press("Enter")
-                await page.wait_for_timeout(5_000)
+                await page.wait_for_timeout(int(polite_delay_seconds(4.0, 7.0) * 1000))
 
             if captured:
                 all_auctions.extend(captured[-1].get("auctions", []))
@@ -109,6 +167,13 @@ class CarsAndBidsScraper(BaseScraper):
                     '.page-next, [class*="next-page"], li.next > a'
                 )
                 if not next_btn:
+                    await self.record_request_log(
+                        url=_PAST_AUCTIONS_URL,
+                        action="pagination_next",
+                        attempt=1,
+                        outcome="selector_missing",
+                        metadata_json={"captured_responses": len(captured)},
+                    )
                     break
                 await next_btn.click()
                 for _ in range(25):  # up to 5s wait
@@ -153,10 +218,40 @@ class CarsAndBidsScraper(BaseScraper):
                 {"label": label, "key": key, "term_index": i, "total_terms": len(entries)},
             )
 
-            try:
-                raw_items = await self._fetch_search_results(query)
-            except Exception as exc:
-                await self._emit("error", f"[{i}/{len(entries)}] {label}: error — {exc}")
+            raw_items: list[dict] | None = None
+            search_started = time.perf_counter()
+            for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
+                try:
+                    raw_items = await self._fetch_search_results(query)
+                    break
+                except Exception as exc:
+                    if attempt < _RETRY_POLICY.max_attempts:
+                        delay = _RETRY_POLICY.delay_for_attempt(attempt)
+                        await self.record_request_log(
+                            url=_PAST_AUCTIONS_URL,
+                            action="closed_auction_search",
+                            attempt=attempt,
+                            duration_ms=int((time.perf_counter() - search_started) * 1000),
+                            outcome="retry",
+                            error_type=type(exc).__name__,
+                            error_message=str(exc),
+                            retry_delay_seconds=delay,
+                            metadata_json={"label": label, "key": key},
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                    await self.record_request_log(
+                        url=_PAST_AUCTIONS_URL,
+                        action="closed_auction_search",
+                        attempt=attempt,
+                        duration_ms=int((time.perf_counter() - search_started) * 1000),
+                        outcome="error",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        metadata_json={"label": label, "key": key},
+                    )
+                    await self._emit("error", f"[{i}/{len(entries)}] {label}: error — {exc}")
+            if raw_items is None:
                 continue
 
             new_count, dup_count, skip_counts = 0, 0, {}
@@ -171,6 +266,34 @@ class CarsAndBidsScraper(BaseScraper):
                     all_lots.append(listing)
                     new_count += 1
 
+            await self.record_request_log(
+                url=_PAST_AUCTIONS_URL,
+                action="closed_auction_search",
+                attempt=1,
+                duration_ms=int((time.perf_counter() - search_started) * 1000),
+                outcome="success",
+                raw_item_count=len(raw_items),
+                parsed_lot_count=new_count,
+                skip_counts=skip_counts,
+                metadata_json={"label": label, "key": key, "duplicates": dup_count},
+            )
+            if not raw_items:
+                await self.record_anomaly(
+                    severity="critical",
+                    code="no_closed_auction_response",
+                    message="Cars & Bids returned no closed-auction API results.",
+                    url=_PAST_AUCTIONS_URL,
+                    metadata_json={"label": label, "key": key},
+                )
+            elif new_count == 0:
+                await self.record_anomaly(
+                    severity="warning",
+                    code="zero_parsed_lots",
+                    message="Cars & Bids returned raw auctions but parsed zero lots.",
+                    url=_PAST_AUCTIONS_URL,
+                    metadata_json={"raw_item_count": len(raw_items), "skip_counts": skip_counts},
+                )
+
             dup_s = f", {dup_count} dups" if dup_count else ""
             skip_s = f" — skipped: {skip_counts}" if skip_counts else ""
             level = "warning" if new_count == 0 and raw_items else "progress"
@@ -181,6 +304,6 @@ class CarsAndBidsScraper(BaseScraper):
             )
 
             if i < len(entries):
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(polite_delay_seconds(2.0, 5.0))
 
         return all_lots

@@ -14,6 +14,8 @@ predictions, watchlists, auth, Cars.com listings, or a TypeScript frontend.
 - `GET /api/admin`
 - `GET /api/admin/status`
 - `GET /api/admin/logs`
+- `GET /api/admin/request-logs`
+- `GET /api/admin/anomalies`
 - `GET /api/admin/lots`
 - `GET /api/admin/lots/{id}`
 - `GET /api/admin/scrapers/bat/targets`
@@ -33,6 +35,10 @@ The initial schema is destructive and raw-first:
 - `auction_images`: source image URLs for each lot. Image files are not
   downloaded.
 - `scrape_runs`: audit trail for scraper executions.
+- `scrape_request_logs`: request/navigation/API-attempt audit trail with
+  status, timing, retry, parse-count, and error details.
+- `scrape_anomalies`: warning and critical events for blocked responses, zero
+  parsed lots, selector/API shape changes, and unusual scraper output.
 - `crawl_state`: checkpoint state for backfill and incremental crawling.
 
 Existing environments should reset the database before applying the new initial
@@ -74,6 +80,11 @@ uv run python scripts/run_scraper.py --mode incremental
 
 Supported modes are `incremental` and `backfill`. The mode is recorded on each
 scrape run and can be used by scrapers/checkpoint logic.
+
+Default schedule settings are nightly incremental at `15 3 * * *` and weekly
+reconciliation at `30 4 * * 0`. Request logs are retained for 90 days by
+default. Production-scale recurring runs should remain permission-first and stop
+on block/rate-limit signals rather than trying to bypass them.
 
 ## Verification
 
