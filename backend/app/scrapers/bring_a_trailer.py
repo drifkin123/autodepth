@@ -14,6 +14,7 @@ import httpx
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 from app.scrapers.bat_parser import (
     SOURCE,
+    extract_completed_metadata_from_html,
     extract_items_from_html,
     parse_item,
 )
@@ -92,10 +93,16 @@ async def fetch_model_entries(client: httpx.AsyncClient) -> list[tuple[str, str,
 
 async def fetch_page(client: httpx.AsyncClient, url_path: str) -> list[dict]:
     """Fetch one BaT model page and return the raw item dicts."""
+    items, _metadata = await fetch_page_result(client, url_path)
+    return items
+
+
+async def fetch_page_result(client: httpx.AsyncClient, url_path: str) -> tuple[list[dict], dict]:
+    """Fetch one BaT model page and return raw items plus pagination telemetry."""
     url = f"{BASE_URL}/{url_path}/"
     resp = await client.get(url, headers=_HEADERS, follow_redirects=True, timeout=30.0)
     resp.raise_for_status()
-    return extract_items_from_html(resp.text)
+    return extract_items_from_html(resp.text), extract_completed_metadata_from_html(resp.text)
 
 
 class BringATrailerScraper(BaseScraper):
@@ -124,12 +131,12 @@ class BringATrailerScraper(BaseScraper):
         *,
         label: str,
         url_path: str,
-    ) -> list[dict] | None:
+    ) -> tuple[list[dict], dict] | None:
         url = f"{BASE_URL}/{url_path}/"
         for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
             started = time.perf_counter()
             try:
-                return await fetch_page(client, url_path)
+                return await fetch_page_result(client, url_path)
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code if exc.response else None
                 duration_ms = int((time.perf_counter() - started) * 1000)
@@ -274,15 +281,16 @@ class BringATrailerScraper(BaseScraper):
 
                 try:
                     started = time.perf_counter()
-                    items = await self._fetch_page_with_retries(
+                    result = await self._fetch_page_with_retries(
                         client, label=label, url_path=url_path
                     )
                 except BlockedScrapeError as exc:
                     await self._emit("error", f"[{i}/{len(urls)}] {label}: blocked — {exc}")
                     break
-                if items is None:
+                if result is None:
                     await self._emit("error", f"[{i}/{len(urls)}] {label}: request failed")
                     continue
+                items, page_metadata = result
 
                 new_count, dup_count, skip_counts = 0, 0, {}
                 for item in items:
@@ -306,8 +314,32 @@ class BringATrailerScraper(BaseScraper):
                     raw_item_count=len(items),
                     parsed_lot_count=new_count,
                     skip_counts=skip_counts,
-                    metadata_json={"label": label, "key": key, "duplicates": dup_count},
+                    metadata_json={
+                        "label": label,
+                        "key": key,
+                        "duplicates": dup_count,
+                        **page_metadata,
+                        "pagination_complete": (page_metadata.get("pages_total") or 1) <= 1,
+                    },
                 )
+                pages_total = page_metadata.get("pages_total") or 1
+                items_total = page_metadata.get("items_total")
+                if pages_total > 1:
+                    await self.record_anomaly(
+                        severity="warning",
+                        code="bat_pagination_incomplete",
+                        message=(
+                            f"BaT page {label} exposes {pages_total} completed-result "
+                            "pages; this run parsed only the first page."
+                        ),
+                        url=f"{BASE_URL}/{url_path}/",
+                        metadata_json={
+                            "items_total": items_total,
+                            "pages_total": pages_total,
+                            "page_current": page_metadata.get("page_current"),
+                            "parsed_first_page": new_count,
+                        },
+                    )
                 if len(items) > 0 and new_count == 0:
                     await self.record_anomaly(
                         severity="warning",
@@ -317,12 +349,15 @@ class BringATrailerScraper(BaseScraper):
                         metadata_json={"raw_item_count": len(items), "skip_counts": skip_counts},
                     )
 
+                total_s = f" of {items_total} total" if items_total else ""
+                page_s = f", page 1/{pages_total}" if pages_total else ""
                 dup_s = f", {dup_count} dups" if dup_count else ""
                 skip_s = f" — skipped: {skip_counts}" if skip_counts else ""
                 level = "warning" if new_count == 0 and len(items) > 0 else "progress"
                 await self._emit(level,
                     f"[{i}/{len(urls)}] {label}: {len(items)} raw → "
-                    f"{new_count} auctions{dup_s}{skip_s} (total: {len(all_lots)})")
+                    f"{new_count} auctions{total_s}{page_s}{dup_s}{skip_s} "
+                    f"(run total: {len(all_lots)})")
 
                 if i < len(urls):
                     await asyncio.sleep(polite_delay_seconds(1.5, 4.0))

@@ -252,12 +252,17 @@
               <th>Outcome</th>
               <th>Status</th>
               <th>Attempt</th>
+              <th>Duration</th>
+              <th>Target</th>
               <th>Raw</th>
               <th>Parsed</th>
+              <th>Total</th>
+              <th>Page</th>
+              <th>Skipped</th>
               <th>Error</th>
             </tr>
           </thead>
-          <tbody id="request-logs-body"><tr><td colspan="9" class="muted">Loading...</td></tr></tbody>
+          <tbody id="request-logs-body"><tr><td colspan="13" class="muted">Loading...</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -466,7 +471,7 @@
       const logs = await res.json();
       const body = document.getElementById('request-logs-body');
       if (!logs.length) {
-        body.innerHTML = '<tr><td colspan="9" class="muted">No request logs recorded.</td></tr>';
+        body.innerHTML = '<tr><td colspan="13" class="muted">No request logs recorded.</td></tr>';
         return;
       }
       body.innerHTML = logs.map(log => `
@@ -477,8 +482,13 @@
           <td>${esc(log.outcome)}</td>
           <td>${log.statusCode ?? '-'}</td>
           <td>${log.attempt}</td>
+          <td>${log.durationMs == null ? '-' : `${log.durationMs}ms`}</td>
+          <td>${esc(log.metadataJson?.label || log.metadataJson?.target || log.metadataJson?.key || '')}</td>
           <td>${log.rawItemCount ?? '-'}</td>
           <td>${log.parsedLotCount ?? '-'}</td>
+          <td>${log.metadataJson?.itemsTotal ?? '-'}</td>
+          <td>${log.metadataJson?.pagesTotal ? `${log.metadataJson?.pageCurrent || 1}/${log.metadataJson.pagesTotal}` : '-'}</td>
+          <td>${Object.keys(log.skipCounts || {}).length ? esc(JSON.stringify(log.skipCounts)) : '-'}</td>
           <td>${esc(log.errorMessage || '')}</td>
         </tr>
       `).join('');

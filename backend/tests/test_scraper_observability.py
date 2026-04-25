@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db import Base
 from app.models.scrape_run import ScrapeRun
@@ -167,3 +167,65 @@ async def test_admin_status_includes_per_source_health(integration_session: Asyn
     assert bat_status.state == "idle"
     assert bat_status.records_found == 12
     assert bat_status.latest_anomaly_severity == "warning"
+
+
+@pytest.mark.asyncio
+async def test_run_and_request_logs_are_visible_while_scrape_is_running(
+    integration_session: AsyncSession,
+) -> None:
+    from app.models.scrape_request_log import ScrapeRequestLog
+    from app.scrapers.base import BaseScraper
+
+    assert integration_session.bind is not None
+    observer_factory = async_sessionmaker(integration_session.bind, expire_on_commit=False)
+    observed: dict[str, int | str | None] = {}
+
+    class VisibleTelemetryScraper(BaseScraper):
+        source = "bring_a_trailer"
+
+        async def scrape(self) -> list:
+            async with observer_factory() as observer:
+                run = (
+                    await observer.execute(
+                        select(ScrapeRun).where(ScrapeRun.source == self.source)
+                    )
+                ).scalar_one_or_none()
+                observed["run_status"] = run.status if run else None
+
+            await self.record_request_log(
+                url="https://bringatrailer.com/porsche/911/",
+                action="http_get",
+                attempt=1,
+                status_code=200,
+                duration_ms=250,
+                outcome="success",
+                raw_item_count=24,
+                parsed_lot_count=18,
+                skip_counts={"no_price": 6},
+                metadata_json={
+                    "label": "Porsche 911",
+                    "page_current": 1,
+                    "pages_total": 768,
+                    "items_total": 18413,
+                },
+            )
+
+            async with observer_factory() as observer:
+                log = (
+                    await observer.execute(
+                        select(ScrapeRequestLog).where(
+                            ScrapeRequestLog.source == self.source
+                        )
+                    )
+                ).scalar_one_or_none()
+                observed["parsed_lot_count"] = log.parsed_lot_count if log else None
+                observed["pages_total"] = (
+                    log.metadata_json.get("pages_total") if log else None
+                )
+            return []
+
+    await VisibleTelemetryScraper(integration_session).run()
+
+    assert observed["run_status"] == "running"
+    assert observed["parsed_lot_count"] == 18
+    assert observed["pages_total"] == 768

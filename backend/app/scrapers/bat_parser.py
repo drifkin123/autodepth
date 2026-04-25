@@ -182,13 +182,29 @@ def parse_item(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
     return lot, ""
 
 
-def extract_items_from_html(html: str) -> list[dict]:
-    """Extract item dicts from BaT's embedded auctionsCompletedInitialData JSON."""
+def extract_completed_data_from_html(html: str) -> dict:
+    """Extract BaT's embedded auctionsCompletedInitialData payload."""
     m = DATA_PATTERN.search(html)
     if not m:
-        return []
+        return {}
     try:
-        data = json.loads(m.group(1))
+        return json.loads(m.group(1))
     except json.JSONDecodeError:
-        return []
+        return {}
+
+
+def extract_completed_metadata_from_html(html: str) -> dict:
+    """Extract pagination/count telemetry from BaT completed-auction payloads."""
+    data = extract_completed_data_from_html(html)
+    return {
+        "items_total": data.get("items_total"),
+        "items_per_page": data.get("items_per_page"),
+        "page_current": data.get("page_current"),
+        "pages_total": data.get("pages_total"),
+    }
+
+
+def extract_items_from_html(html: str) -> list[dict]:
+    """Extract item dicts from BaT's embedded auctionsCompletedInitialData JSON."""
+    data = extract_completed_data_from_html(html)
     return data.get("items", [])

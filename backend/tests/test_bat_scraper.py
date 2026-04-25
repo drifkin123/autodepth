@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models.scrape_anomaly import ScrapeAnomaly
 from app.models.scrape_request_log import ScrapeRequestLog
-from app.scrapers.bat_parser import parse_item, parse_mileage, parse_sold_text, parse_year
+from app.scrapers.bat_parser import (
+    extract_completed_metadata_from_html,
+    parse_item,
+    parse_mileage,
+    parse_sold_text,
+    parse_year,
+)
 from app.scrapers.bring_a_trailer import (
     BringATrailerScraper,
     extract_model_entries_from_html,
@@ -114,18 +120,21 @@ def test_bat_targets_are_exposed() -> None:
 
 
 @patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_page", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_page_result", new_callable=AsyncMock)
 async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
-    mock_fetch_page: AsyncMock,
+    mock_fetch_page_result: AsyncMock,
     _mock_sleep: AsyncMock,
 ) -> None:
-    mock_fetch_page.return_value = [
-        {
-            **SOLD_ITEM,
-            "title": "Euro Porsche 996 GT3 Recaro Seats",
-            "url": "https://bringatrailer.com/listing/seats-206/",
-        }
-    ]
+    mock_fetch_page_result.return_value = (
+        [
+            {
+                **SOLD_ITEM,
+                "title": "Euro Porsche 996 GT3 Recaro Seats",
+                "url": "https://bringatrailer.com/listing/seats-206/",
+            }
+        ],
+        {"items_total": 1, "page_current": 1, "pages_total": 1},
+    )
     session = AsyncMock()
     session.add = MagicMock()
 
@@ -141,3 +150,26 @@ async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
     assert logs[0].parsed_lot_count == 0
     assert logs[0].skip_counts == {"no_year": 1}
     assert any(anomaly.code == "zero_parsed_lots" for anomaly in anomalies)
+
+
+def test_bat_extracts_completed_pagination_telemetry() -> None:
+    html = """
+    <script>
+      var auctionsCompletedInitialData = {
+        "items": [],
+        "items_total": 18413,
+        "items_per_page": 24,
+        "page_current": 1,
+        "pages_total": 768
+      };
+    </script>
+    """
+
+    metadata = extract_completed_metadata_from_html(html)
+
+    assert metadata == {
+        "items_total": 18413,
+        "items_per_page": 24,
+        "page_current": 1,
+        "pages_total": 768,
+    }

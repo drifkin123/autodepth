@@ -78,6 +78,14 @@ uv run python scripts/run_scraper.py --source cars_and_bids --mode backfill
 uv run python scripts/run_scraper.py --mode incremental
 ```
 
+CLI runs emit one structured line per request/page with outcome, status,
+duration, raw item count, parsed lot count, skip counts, and source metadata.
+The same data is committed immediately to `scrape_request_logs`, so the admin
+console can show progress while a run is still active. BaT model pages also
+record source-reported `items_total`, `page_current`, and `pages_total`; if a
+model has more completed-result pages than the scraper fetched, the run records
+a `bat_pagination_incomplete` anomaly.
+
 Supported modes are `incremental` and `backfill`. The mode is recorded on each
 scrape run and can be used by scrapers/checkpoint logic.
 
