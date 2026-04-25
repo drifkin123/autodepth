@@ -5,7 +5,7 @@ Usage from backend/:
     python scripts/run_scraper.py
 
     # Run a specific source
-    python scripts/run_scraper.py --source bring_a_trailer
+    python scripts/run_scraper.py --source bring_a_trailer --mode backfill
 """
 
 import asyncio
@@ -19,6 +19,7 @@ import argparse
 
 from app.db import async_session_factory
 from app.scrapers.bring_a_trailer import BringATrailerScraper
+from app.scrapers.cars_and_bids import CarsAndBidsScraper
 from app.services.scraper import run_all_scrapers
 
 logging.basicConfig(
@@ -28,21 +29,22 @@ logging.basicConfig(
 
 SCRAPER_MAP = {
     "bring_a_trailer": BringATrailerScraper,
+    "cars_and_bids": CarsAndBidsScraper,
 }
 
 
-async def main(source: str | None) -> None:
+async def main(source: str | None, mode: str) -> None:
     async with async_session_factory() as session:
         if source:
             cls = SCRAPER_MAP.get(source)
             if cls is None:
                 print(f"Unknown source: {source}. Available: {list(SCRAPER_MAP)}")
                 sys.exit(1)
-            scraper = cls(session)
+            scraper = cls(session, mode=mode)
             found, inserted = await scraper.run()
             print(f"{source}: {found} found, {inserted} inserted")
         else:
-            results = await run_all_scrapers(session)
+            results = await run_all_scrapers(session, mode=mode)
             for src, (found, inserted) in results.items():
                 status = "ERROR" if found == -1 else f"{found} found, {inserted} inserted"
                 print(f"{src}: {status}")
@@ -51,5 +53,11 @@ async def main(source: str | None) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", help="Scraper source name (default: all)")
+    parser.add_argument(
+        "--mode",
+        choices=("incremental", "backfill"),
+        default="incremental",
+        help="Crawl mode metadata recorded on scrape runs",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.source))
+    asyncio.run(main(args.source, args.mode))

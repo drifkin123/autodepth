@@ -1,63 +1,31 @@
-"""Validation tests for the centralized makes configuration in scrapers/makes.py."""
+"""Validation tests for scrape target configuration."""
 
-import pytest
-from app.scrapers.makes import BAT_MAKES, CAB_MAKES, CARS_COM_MAKES
-
-
-ALL_LISTS: list[tuple[str, list[tuple[str, str, str]]]] = [
-    ("BAT_MAKES", BAT_MAKES),
-    ("CAB_MAKES", CAB_MAKES),
-    ("CARS_COM_MAKES", CARS_COM_MAKES),
-]
+from app.scrapers.bring_a_trailer import get_url_entries as get_bat_url_entries
+from app.scrapers.cars_and_bids import get_url_entries as get_cab_url_entries
+from app.scrapers.makes import BAT_MAKES
 
 
-@pytest.mark.parametrize("list_name,makes_list", ALL_LISTS)
-def test_no_duplicate_keys(list_name: str, makes_list: list[tuple[str, str, str]]) -> None:
-    """Each list must not contain duplicate keys (first element of each tuple)."""
-    keys = [entry[0] for entry in makes_list]
-    duplicate_keys = [key for key in keys if keys.count(key) > 1]
-    assert duplicate_keys == [], (
-        f"{list_name} contains duplicate keys: {sorted(set(duplicate_keys))}"
-    )
+def test_bat_make_targets_have_unique_keys() -> None:
+    keys = [entry[0] for entry in BAT_MAKES]
+
+    assert len(keys) == len(set(keys))
 
 
-@pytest.mark.parametrize("list_name,makes_list", ALL_LISTS)
-def test_all_tuples_have_three_non_empty_strings(
-    list_name: str, makes_list: list[tuple[str, str, str]]
-) -> None:
-    """Every tuple must contain exactly three non-empty strings."""
-    for entry in makes_list:
-        assert len(entry) == 3, (
-            f"{list_name}: tuple {entry!r} does not have exactly 3 elements"
-        )
-        for field in entry:
-            assert isinstance(field, str) and field.strip() != "", (
-                f"{list_name}: tuple {entry!r} contains an empty or non-string field"
-            )
+def test_bat_make_targets_are_complete_tuples() -> None:
+    for key, label, slug in BAT_MAKES:
+        assert key.strip()
+        assert label.strip()
+        assert slug.strip()
 
 
-def test_cars_com_slugs_contain_no_hyphens() -> None:
-    """Cars.com slugs (third element) must use underscores, not hyphens, for multi-word names."""
-    slugs_with_hyphens = [
-        entry[2] for entry in CARS_COM_MAKES if "-" in entry[2]
-    ]
-    assert slugs_with_hyphens == [], (
-        f"CARS_COM_MAKES slugs must not contain hyphens; found: {slugs_with_hyphens}"
-    )
+def test_bat_target_endpoint_entries_include_paths() -> None:
+    entries = get_bat_url_entries()
+
+    assert entries
+    assert all(entry["key"] and entry["label"] and entry["path"] for entry in entries)
 
 
-def test_all_lists_have_same_keys() -> None:
-    """BAT_MAKES, CAB_MAKES, and CARS_COM_MAKES must cover the same set of keys."""
-    bat_keys = {entry[0] for entry in BAT_MAKES}
-    cab_keys = {entry[0] for entry in CAB_MAKES}
-    cars_com_keys = {entry[0] for entry in CARS_COM_MAKES}
+def test_cars_and_bids_uses_global_closed_auction_target() -> None:
+    entries = get_cab_url_entries()
 
-    bat_vs_cab = bat_keys.symmetric_difference(cab_keys)
-    assert bat_vs_cab == set(), (
-        f"BAT_MAKES and CAB_MAKES differ in keys: {sorted(bat_vs_cab)}"
-    )
-
-    bat_vs_cars_com = bat_keys.symmetric_difference(cars_com_keys)
-    assert bat_vs_cars_com == set(), (
-        f"BAT_MAKES and CARS_COM_MAKES differ in keys: {sorted(bat_vs_cars_com)}"
-    )
+    assert entries == [{"key": "all", "label": "All closed auctions", "query": ""}]

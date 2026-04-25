@@ -1,12 +1,8 @@
-"""Centralized makes configuration for all scraping platforms.
+"""Centralized target configuration for auction scraping platforms.
 
-Each list contains tuples of (key, human_label, platform_slug) for the ~45
-supported makes. Scrapers import from here rather than maintaining their own
-hardcoded make lists.
-
-- BAT_MAKES: BaT URL path slugs (bringatrailer.com/{make_slug}/)
-- CAB_MAKES: Cars & Bids search query strings (typed into the search box)
-- CARS_COM_MAKES: Cars.com make filter slugs (?makes[]={make_slug})
+BaT exposes make/model archive pages, so we retain make slugs as crawl seeds.
+Cars & Bids is crawled through the global closed-auctions feed and deliberately
+does not depend on a hand-written make/model list.
 """
 
 # ---------------------------------------------------------------------------
@@ -53,108 +49,6 @@ BAT_MAKES: list[tuple[str, str, str]] = [
     ("porsche", "Porsche", "porsche"),
     ("ram", "Ram", "ram"),
     ("rolls-royce", "Rolls-Royce", "rolls-royce"),
-    ("subaru", "Subaru", "subaru"),
-    ("tesla", "Tesla", "tesla"),
-    ("toyota", "Toyota", "toyota"),
-    ("volkswagen", "Volkswagen", "volkswagen"),
-    ("volvo", "Volvo", "volvo"),
-]
-
-# ---------------------------------------------------------------------------
-# Cars & Bids — human-readable search terms typed into the search box
-# ---------------------------------------------------------------------------
-
-CAB_MAKES: list[tuple[str, str, str]] = [
-    ("acura", "Acura", "Acura"),
-    ("alfa-romeo", "Alfa Romeo", "Alfa Romeo"),
-    ("aston-martin", "Aston Martin", "Aston Martin"),
-    ("audi", "Audi", "Audi"),
-    ("bentley", "Bentley", "Bentley"),
-    ("bmw", "BMW", "BMW"),
-    ("bugatti", "Bugatti", "Bugatti"),
-    ("buick", "Buick", "Buick"),
-    ("cadillac", "Cadillac", "Cadillac"),
-    ("chevrolet", "Chevrolet", "Chevrolet"),
-    ("chrysler", "Chrysler", "Chrysler"),
-    ("dodge", "Dodge", "Dodge"),
-    ("ferrari", "Ferrari", "Ferrari"),
-    ("fiat", "Fiat", "Fiat"),
-    ("ford", "Ford", "Ford"),
-    ("genesis", "Genesis", "Genesis"),
-    ("gmc", "GMC", "GMC"),
-    ("honda", "Honda", "Honda"),
-    ("hyundai", "Hyundai", "Hyundai"),
-    ("infiniti", "Infiniti", "Infiniti"),
-    ("jaguar", "Jaguar", "Jaguar"),
-    ("jeep", "Jeep", "Jeep"),
-    ("kia", "Kia", "Kia"),
-    ("lamborghini", "Lamborghini", "Lamborghini"),
-    ("land-rover", "Land Rover", "Land Rover"),
-    ("lexus", "Lexus", "Lexus"),
-    ("lincoln", "Lincoln", "Lincoln"),
-    ("lotus", "Lotus", "Lotus"),
-    ("maserati", "Maserati", "Maserati"),
-    ("mazda", "Mazda", "Mazda"),
-    ("mclaren", "McLaren", "McLaren"),
-    ("mercedes-benz", "Mercedes-Benz", "Mercedes-Benz"),
-    ("mini", "MINI", "MINI"),
-    ("mitsubishi", "Mitsubishi", "Mitsubishi"),
-    ("nissan", "Nissan", "Nissan"),
-    ("pagani", "Pagani", "Pagani"),
-    ("porsche", "Porsche", "Porsche"),
-    ("ram", "Ram", "Ram"),
-    ("rolls-royce", "Rolls-Royce", "Rolls-Royce"),
-    ("subaru", "Subaru", "Subaru"),
-    ("tesla", "Tesla", "Tesla"),
-    ("toyota", "Toyota", "Toyota"),
-    ("volkswagen", "Volkswagen", "Volkswagen"),
-    ("volvo", "Volvo", "Volvo"),
-]
-
-# ---------------------------------------------------------------------------
-# Cars.com — lowercase underscore-separated slugs for ?makes[]= query param
-# ---------------------------------------------------------------------------
-
-CARS_COM_MAKES: list[tuple[str, str, str]] = [
-    ("acura", "Acura", "acura"),
-    ("alfa-romeo", "Alfa Romeo", "alfa_romeo"),
-    ("aston-martin", "Aston Martin", "aston_martin"),
-    ("audi", "Audi", "audi"),
-    ("bentley", "Bentley", "bentley"),
-    ("bmw", "BMW", "bmw"),
-    ("bugatti", "Bugatti", "bugatti"),
-    ("buick", "Buick", "buick"),
-    ("cadillac", "Cadillac", "cadillac"),
-    ("chevrolet", "Chevrolet", "chevrolet"),
-    ("chrysler", "Chrysler", "chrysler"),
-    ("dodge", "Dodge", "dodge"),
-    ("ferrari", "Ferrari", "ferrari"),
-    ("fiat", "Fiat", "fiat"),
-    ("ford", "Ford", "ford"),
-    ("genesis", "Genesis", "genesis"),
-    ("gmc", "GMC", "gmc"),
-    ("honda", "Honda", "honda"),
-    ("hyundai", "Hyundai", "hyundai"),
-    ("infiniti", "Infiniti", "infiniti"),
-    ("jaguar", "Jaguar", "jaguar"),
-    ("jeep", "Jeep", "jeep"),
-    ("kia", "Kia", "kia"),
-    ("lamborghini", "Lamborghini", "lamborghini"),
-    ("land-rover", "Land Rover", "land_rover"),
-    ("lexus", "Lexus", "lexus"),
-    ("lincoln", "Lincoln", "lincoln"),
-    ("lotus", "Lotus", "lotus"),
-    ("maserati", "Maserati", "maserati"),
-    ("mazda", "Mazda", "mazda"),
-    ("mclaren", "McLaren", "mclaren"),
-    ("mercedes-benz", "Mercedes-Benz", "mercedes_benz"),
-    ("mini", "MINI", "mini"),
-    ("mitsubishi", "Mitsubishi", "mitsubishi"),
-    ("nissan", "Nissan", "nissan"),
-    ("pagani", "Pagani", "pagani"),
-    ("porsche", "Porsche", "porsche"),
-    ("ram", "Ram", "ram"),
-    ("rolls-royce", "Rolls-Royce", "rolls_royce"),
     ("subaru", "Subaru", "subaru"),
     ("tesla", "Tesla", "tesla"),
     ("toyota", "Toyota", "toyota"),

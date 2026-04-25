@@ -3,888 +3,380 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AutoDepth — Admin</title>
+  <title>AutoDepth Ingestion Admin</title>
   <style>
     :root {
-      --bg: #0A0A0A;
+      --bg: #0a0a0a;
       --surface: #141414;
-      --border: #222;
-      --accent: #E8D5A3;
-      --text: #F5F5F5;
-      --muted: #666;
-      --red: #ef4444;
+      --border: #252525;
+      --text: #f5f5f5;
+      --muted: #888;
+      --accent: #e8d5a3;
       --green: #4ade80;
-      --yellow: #facc15;
+      --red: #ef4444;
       --blue: #60a5fa;
-      --orange: #fb923c;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * { box-sizing: border-box; }
     body {
+      margin: 0;
       background: var(--bg);
       color: var(--text);
-      font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
       font-size: 13px;
-      min-height: 100vh;
     }
-
-    /* ── Auth gate ── */
-    #auth-gate {
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh;
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
     }
-    .auth-card {
+    .brand { font-weight: 700; }
+    .brand span { color: var(--accent); }
+    main { max-width: 1440px; margin: 0 auto; padding: 24px; }
+    .actions, .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+    button, select, input {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #1c1c1c;
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    button { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    .primary { background: var(--accent); color: #090909; border-color: var(--accent); }
+    .danger { background: #2a1717; color: var(--red); }
+    .panel {
       background: var(--surface);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 40px;
-      width: 340px;
-      text-align: center;
+      border-radius: 8px;
+      margin-bottom: 18px;
+      overflow: hidden;
     }
-    .auth-card h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-    .auth-card .sub { color: var(--muted); margin-bottom: 24px; font-size: 12px; }
-    .auth-card input {
-      width: 100%; padding: 10px 14px;
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; color: var(--text); font-size: 13px;
-      margin-bottom: 12px; outline: none;
-    }
-    .auth-card input:focus { border-color: var(--accent); }
-    .auth-card .err { color: var(--red); font-size: 12px; margin-bottom: 10px; min-height: 16px; }
-
-    /* ── Dashboard ── */
-    #dashboard { display: none; }
-    header {
-      border-bottom: 1px solid var(--border);
-      padding: 14px 24px;
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    header .brand { font-size: 15px; font-weight: 600; }
-    header .brand span { color: var(--accent); }
-    header .status-pill {
-      font-size: 11px; padding: 3px 10px; border-radius: 999px;
-      font-weight: 500; letter-spacing: 0.03em;
-    }
-    .pill-idle { background: #1a1a1a; color: var(--muted); border: 1px solid var(--border); }
-    .pill-running { background: #1a2a1a; color: var(--green); border: 1px solid #2a4a2a; animation: pulse 1.5s ease-in-out infinite; }
-    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
-
-    main { padding: 24px; max-width: 1400px; margin: 0 auto; }
-
-    /* ── Action bar ── */
-    .actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
-    button {
-      padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 500;
-      cursor: pointer; border: none; transition: opacity .15s;
-    }
-    button:hover { opacity: .85; }
-    button:disabled { opacity: .4; cursor: not-allowed; }
-    .btn-primary { background: var(--accent); color: #0A0A0A; }
-    .btn-secondary { background: #1e1e1e; color: var(--text); border: 1px solid var(--border); }
-    .btn-danger { background: #2a1a1a; color: var(--red); border: 1px solid #4a2a2a; }
-
-    /* ── Tabs ── */
-    .tabs {
-      display: flex; gap: 0; margin-bottom: 20px;
+    .panel h2 {
+      margin: 0;
+      padding: 13px 14px;
+      font-size: 14px;
       border-bottom: 1px solid var(--border);
     }
-    .tab {
-      padding: 10px 20px; font-size: 13px; font-weight: 500;
-      cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent;
-      margin-bottom: -1px; transition: color .15s;
-      background: none; border-top: none; border-left: none; border-right: none;
-      border-radius: 0;
-    }
-    .tab:hover { color: var(--text); opacity: 1; }
-    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-    .tab-panel { display: none; }
-    .tab-panel.active { display: block; }
-
-    /* ── Stats row ── */
-    .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }
-    .stat-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; padding: 16px;
-    }
-    .stat-card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
-    .stat-card .value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
-    .stat-card .value.accent { color: var(--accent); }
-    .stat-card .value.red { color: var(--red); }
-    .stat-card .value.green { color: var(--green); }
-
-    /* ── Layout ── */
-    .grid-main { display: grid; grid-template-columns: 280px 1fr; gap: 16px; margin-bottom: 16px; }
-    @media (max-width: 900px) { .grid-main { grid-template-columns: 1fr; } }
-
-    /* ── Panel ── */
-    .panel {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: 8px; overflow: hidden;
-    }
-    .panel-header {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; justify-content: space-between;
-    }
-    .panel-header h2 { font-size: 13px; font-weight: 600; }
-    .panel-header .hint { font-size: 11px; color: var(--muted); }
-
-    /* ── Car selector ── */
-    .selector-stack { display: flex; flex-direction: column; gap: 16px; }
-    .car-selector { max-height: 300px; overflow-y: auto; }
-    .car-selector-controls {
-      padding: 10px 16px; border-bottom: 1px solid var(--border);
-      display: flex; gap: 8px; align-items: center;
-    }
-    .car-selector-controls button {
-      padding: 4px 10px; font-size: 11px; border-radius: 4px;
-    }
-    .car-selector-controls .count { font-size: 11px; color: var(--muted); margin-left: auto; }
-    .car-list { padding: 6px 0; }
-    .car-item {
-      display: flex; align-items: center; gap: 10px;
-      padding: 6px 16px; cursor: pointer; user-select: none;
-      transition: background .1s;
-    }
-    .car-item:hover { background: #1a1a1a; }
-    .car-item input[type=checkbox] {
-      accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer;
-    }
-    .car-item label { font-size: 12px; cursor: pointer; flex: 1; }
-    .car-item .car-key { font-size: 10px; color: var(--muted); font-family: monospace; }
-    .car-group-label {
-      font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
-      color: var(--accent); padding: 10px 16px 4px; opacity: .7;
-    }
-
-    /* ── Log feed ── */
-    #log-feed {
-      height: 480px; overflow-y: auto; padding: 12px 16px;
-      font-family: 'Menlo', 'Consolas', monospace; font-size: 11.5px; line-height: 1.8;
-      background: #0d0d0d;
-    }
-    #log-feed::-webkit-scrollbar { width: 4px; }
-    #log-feed::-webkit-scrollbar-track { background: transparent; }
-    #log-feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-    .log-line { display: flex; gap: 8px; }
-    .log-ts { color: var(--muted); flex-shrink: 0; min-width: 72px; }
-    .log-source { color: var(--accent); flex-shrink: 0; min-width: 110px; }
-    .log-msg { white-space: pre-wrap; word-break: break-word; }
-    .log-start .log-msg { color: var(--blue); }
-    .log-complete .log-msg { color: var(--green); }
-    .log-error .log-msg { color: var(--red); }
-    .log-warning .log-msg { color: var(--orange); }
-    .log-done .log-msg { color: var(--muted); font-style: italic; }
-    .log-detail { color: var(--muted); font-size: 10.5px; padding-left: 190px; line-height: 1.6; }
-    #log-empty { color: var(--muted); font-style: italic; font-size: 12px; padding: 4px 0; }
-
-    /* ── Progress bar ── */
-    .progress-bar-wrap {
-      height: 3px; background: #1a1a1a; margin: 0;
-    }
-    .progress-bar-fill {
-      height: 100%; background: var(--accent); transition: width .4s ease;
-      width: 0%;
-    }
-
-    /* ── Listings filters ── */
-    .filter-bar {
-      display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
-      padding: 14px 16px; border-bottom: 1px solid var(--border);
-    }
-    .filter-bar label { font-size: 11px; color: var(--muted); }
-    .filter-bar select, .filter-bar input[type=date] {
-      background: var(--bg); border: 1px solid var(--border);
-      color: var(--text); font-size: 12px; padding: 5px 10px;
-      border-radius: 5px; outline: none;
-    }
-    .filter-bar select:focus, .filter-bar input[type=date]:focus { border-color: var(--accent); }
-    .filter-bar .filter-group { display: flex; align-items: center; gap: 6px; }
-    #listings-count { font-size: 11px; color: var(--muted); margin-left: auto; }
-
-    /* ── Pagination ── */
-    .pagination {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px;
-    }
-    .pagination .page-info { color: var(--muted); }
-    .pagination-btns { display: flex; gap: 8px; }
-    .pagination-btns button { padding: 5px 14px; font-size: 12px; }
-
-    /* ── History table ── */
-    .table-wrap { overflow-x: auto; }
+    .panel-body { padding: 14px; }
+    .status { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+    .dot.on { background: var(--green); }
     table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 9px 14px; text-align: left; white-space: nowrap; }
-    th { font-size: 11px; font-weight: 600; text-transform: uppercase;
-         letter-spacing: .05em; color: var(--muted); border-bottom: 1px solid var(--border); }
-    td { border-bottom: 1px solid #1a1a1a; font-size: 12px; }
-    tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #171717; }
-    td a { color: var(--accent); text-decoration: none; }
-    td a:hover { text-decoration: underline; }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+    a { color: var(--accent); text-decoration: none; }
     .badge {
-      display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 10px; font-weight: 600; letter-spacing: .04em;
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: #1d2430;
+      color: var(--blue);
+      font-size: 11px;
     }
-    .badge-ok { background: #1a2a1a; color: var(--green); }
-    .badge-err { background: #2a1a1a; color: var(--red); }
-    .badge-running { background: #1a1a2a; color: var(--blue); }
-
-    #no-logs { color: var(--muted); padding: 20px 14px; font-style: italic; font-size: 12px; }
-
-    .ws-indicator {
-      display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-      margin-right: 6px; background: var(--muted);
+    .sold { background: #17251a; color: var(--green); }
+    .unsold { background: #2a2017; color: var(--accent); }
+    #feed, pre {
+      max-height: 320px;
+      overflow: auto;
+      background: #0d0d0d;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px;
+      color: #d7d7d7;
     }
-    .ws-connected { background: var(--green); }
-    .ws-disconnected { background: var(--red); }
+    .line { padding: 4px 0; border-bottom: 1px solid #1b1b1b; }
+    .muted { color: var(--muted); }
   </style>
 </head>
 <body>
-
-<!-- Auth gate -->
-<div id="auth-gate">
-  <div class="auth-card">
-    <h1>AutoDepth</h1>
-    <p class="sub">Admin Dashboard</p>
-    <input id="secret-input" type="password" placeholder="Admin secret" autofocus
-           onkeydown="if(event.key==='Enter') doLogin()">
-    <div class="err" id="auth-err"></div>
-    <button class="btn-primary" style="width:100%" onclick="doLogin()">Sign in</button>
-  </div>
-</div>
-
-<!-- Dashboard -->
-<div id="dashboard">
   <header>
-    <div class="brand">Auto<span>Depth</span> <span style="color:var(--muted);font-weight:400;font-size:12px;margin-left:6px">Admin</span></div>
-    <div style="display:flex;align-items:center;gap:12px">
-      <span id="ws-dot" class="ws-indicator"></span>
-      <span id="ws-label" style="font-size:11px;color:var(--muted)">WebSocket disconnected</span>
-      <span id="running-pill" class="status-pill pill-idle">Idle</span>
-    </div>
+    <div class="brand">Auto<span>Depth</span> Ingestion Admin</div>
+    <div class="status"><span id="ws-dot" class="dot"></span><span id="ws-label">Disconnected</span><span id="run-label">Idle</span></div>
   </header>
-
   <main>
-    <div class="tabs">
-      <button class="tab active" onclick="switchTab('scraper')">Scraper</button>
-      <button class="tab" onclick="switchTab('listings')">Listings</button>
-    </div>
-
-    <!-- ── Scraper tab ── -->
-    <div id="tab-scraper" class="tab-panel active">
-      <div class="actions">
-        <button id="btn-scrape" class="btn-primary" onclick="triggerScrape()">Run Scrape</button>
-        <button id="btn-stop" class="btn-danger" onclick="stopScrape()" disabled>Stop Scrape</button>
-        <button id="btn-depreciation" class="btn-secondary" onclick="triggerDepreciation()">Run Depreciation Model</button>
-        <button class="btn-secondary" onclick="loadLogs()">Refresh Logs</button>
-        <button class="btn-secondary" onclick="clearFeed()">Clear Feed</button>
+    <section class="panel">
+      <h2>Scrapers</h2>
+      <div class="panel-body">
+        <div class="actions">
+          <select id="scrape-mode">
+            <option value="incremental">Incremental</option>
+            <option value="backfill">Backfill</option>
+          </select>
+          <button class="primary" id="run-btn" onclick="triggerScrape()">Run Scrape</button>
+          <button class="danger" id="stop-btn" onclick="stopScrape()" disabled>Stop Scrape</button>
+          <button onclick="loadRuns()">Refresh Runs</button>
+          <button onclick="loadLots(1)">Refresh Lots</button>
+        </div>
+        <div id="feed"><div class="muted">Waiting for scrape events...</div></div>
       </div>
+    </section>
 
-      <div class="stats-row">
-        <div class="stat-card">
-          <div class="label">Total Scrape Runs</div>
-          <div class="value accent" id="stat-total">&mdash;</div>
+    <section class="panel">
+      <h2>Auction Lots</h2>
+      <div class="panel-body">
+        <div class="filters">
+          <select id="filter-source" onchange="loadLots(1)">
+            <option value="">All sources</option>
+            <option value="bring_a_trailer">Bring a Trailer</option>
+            <option value="cars_and_bids">Cars &amp; Bids</option>
+          </select>
+          <select id="filter-status" onchange="loadLots(1)">
+            <option value="">All statuses</option>
+            <option value="sold">Sold</option>
+            <option value="reserve_not_met">Reserve not met</option>
+            <option value="withdrawn">Withdrawn</option>
+            <option value="unknown">Unknown</option>
+          </select>
+          <select id="filter-is-sold" onchange="loadLots(1)">
+            <option value="">Sold and unsold</option>
+            <option value="true">Confirmed sold</option>
+            <option value="false">Unsold only</option>
+          </select>
+          <input id="filter-make" placeholder="Make" onkeydown="if(event.key==='Enter') loadLots(1)">
+          <input id="filter-model" placeholder="Model" onkeydown="if(event.key==='Enter') loadLots(1)">
+          <input id="filter-year" type="number" placeholder="Year" onkeydown="if(event.key==='Enter') loadLots(1)">
+          <input id="filter-ended-from" type="date" onchange="loadLots(1)">
+          <input id="filter-ended-to" type="date" onchange="loadLots(1)">
+          <button onclick="clearFilters()">Clear</button>
         </div>
-        <div class="stat-card">
-          <div class="label">Last Run</div>
-          <div class="value" id="stat-last" style="font-size:13px;padding-top:4px">&mdash;</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Records Inserted (last run)</div>
-          <div class="value green" id="stat-inserted">&mdash;</div>
-        </div>
-        <div class="stat-card">
-          <div class="label">Errors (last 50 runs)</div>
-          <div class="value" id="stat-errors">&mdash;</div>
-        </div>
-      </div>
-
-      <div class="grid-main">
-        <div class="selector-stack">
-          <div class="panel">
-            <div class="panel-header">
-              <h2>Bring a Trailer</h2>
-              <span class="hint">Car pages</span>
-            </div>
-            <div class="car-selector-controls">
-              <button class="btn-secondary" onclick="toggleAll('bat', true)">All</button>
-              <button class="btn-secondary" onclick="toggleAll('bat', false)">None</button>
-              <span class="count" id="bat-car-count">0 / 0</span>
-            </div>
-            <div class="car-selector" id="bat-car-selector">
-              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-header">
-              <h2>Cars.com</h2>
-              <span class="hint">Search pages</span>
-            </div>
-            <div class="car-selector-controls">
-              <button class="btn-secondary" onclick="toggleAll('cc', true)">All</button>
-              <button class="btn-secondary" onclick="toggleAll('cc', false)">None</button>
-              <span class="count" id="cc-car-count">0 / 0</span>
-            </div>
-            <div class="car-selector" id="cc-car-selector">
-              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-header">
-              <h2>Cars &amp; Bids</h2>
-              <span class="hint">Auction searches</span>
-            </div>
-            <div class="car-selector-controls">
-              <button class="btn-secondary" onclick="toggleAll('cab', true)">All</button>
-              <button class="btn-secondary" onclick="toggleAll('cab', false)">None</button>
-              <span class="count" id="cab-car-count">0 / 0</span>
-            </div>
-            <div class="car-selector" id="cab-car-selector">
-              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-header">
-            <h2>Live Log Feed</h2>
-            <span class="hint" id="log-hint">Real-time events from active scrape</span>
-          </div>
-          <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-bar"></div></div>
-          <div id="log-feed">
-            <div id="log-empty">Waiting for scrape events…</div>
-          </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Vehicle</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Sold Price</th>
+              <th>High Bid</th>
+              <th>Bids</th>
+              <th>Ended</th>
+              <th>Images</th>
+              <th>Links</th>
+            </tr>
+          </thead>
+          <tbody id="lots-body"><tr><td colspan="9" class="muted">Loading...</td></tr></tbody>
+        </table>
+        <div class="actions" style="margin-top:14px">
+          <button id="prev-btn" onclick="loadLots(currentPage - 1)" disabled>Previous</button>
+          <span id="page-info" class="muted"></span>
+          <button id="next-btn" onclick="loadLots(currentPage + 1)" disabled>Next</button>
         </div>
       </div>
+    </section>
 
-      <div class="panel">
-        <div class="panel-header">
-          <h2>Scrape History</h2>
-          <span class="hint">Last 50 runs</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Source</th>
-                <th>Started</th>
-                <th>Duration</th>
-                <th>Found</th>
-                <th>Inserted</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody id="logs-tbody">
-              <tr><td colspan="6" id="no-logs">Loading…</td></tr>
-            </tbody>
-          </table>
-        </div>
+    <section class="panel">
+      <h2>Lot Detail</h2>
+      <div class="panel-body">
+        <pre id="lot-detail">Select a lot to inspect raw payloads.</pre>
       </div>
-    </div>
+    </section>
 
-    <!-- ── Listings tab ── -->
-    <div id="tab-listings" class="tab-panel">
-      <div class="panel">
-        <div class="filter-bar">
-          <div class="filter-group">
-            <label>Source</label>
-            <select id="filter-source" onchange="loadListings(1)">
-              <option value="">All sources</option>
-              <option value="bring_a_trailer">Bring a Trailer</option>
-              <option value="cars_and_bids">Cars &amp; Bids</option>
-              <option value="rm_sotheby">RM Sotheby's</option>
-              <option value="cars_com">Cars.com</option>
-            </select>
-          </div>
-          <div class="filter-group">
-            <label>From</label>
-            <input type="date" id="filter-date-from" onchange="loadListings(1)">
-          </div>
-          <div class="filter-group">
-            <label>To</label>
-            <input type="date" id="filter-date-to" onchange="loadListings(1)">
-          </div>
-          <div class="filter-group">
-            <label>Status</label>
-            <select id="filter-sold" onchange="loadListings(1)">
-              <option value="">All</option>
-              <option value="true">Sold</option>
-              <option value="false">Unsold</option>
-            </select>
-          </div>
-          <button class="btn-secondary" onclick="clearListingFilters()">Clear</button>
-          <span id="listings-count"></span>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Car</th>
-                <th>Year</th>
-                <th>Source</th>
-                <th>Sold Price</th>
-                <th>Asking Price</th>
-                <th>Mileage</th>
-                <th>Color</th>
-                <th>Status</th>
-                <th>Listed</th>
-                <th>Link</th>
-              </tr>
-            </thead>
-            <tbody id="listings-tbody">
-              <tr><td colspan="10" style="padding:20px 14px;color:var(--muted);font-style:italic">Switch to this tab to load listings.</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="pagination">
-          <span class="page-info" id="listings-page-info"></span>
-          <div class="pagination-btns">
-            <button class="btn-secondary" id="btn-prev" onclick="listingsPage(-1)" disabled>← Prev</button>
-            <button class="btn-secondary" id="btn-next" onclick="listingsPage(+1)" disabled>Next →</button>
-          </div>
-        </div>
+    <section class="panel">
+      <h2>Scrape Runs</h2>
+      <div class="panel-body">
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Mode</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Found</th>
+              <th>Inserted</th>
+              <th>Updated</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="runs-body"><tr><td colspan="8" class="muted">Loading...</td></tr></tbody>
+        </table>
       </div>
-    </div>
+    </section>
   </main>
-</div>
 
-<script>
-  let TOKEN = '';
-  let ws = null;
-  let logEmpty = true;
-  let batUrls = [];
-  let carsComUrls = [];
-  let cabUrls = [];
-  let listingsCurrentPage = 1;
-  let listingsTotal = 0;
-  const LISTINGS_PAGE_SIZE = 50;
+  <script>
+    let ws = null;
+    let currentPage = 1;
+    let totalLots = 0;
+    const pageSize = 50;
 
-  // ── Tabs ──────────────────────────────────────────────────────────────────
-  function switchTab(name) {
-    document.querySelectorAll('.tab').forEach((t, i) => {
-      const panels = ['scraper', 'listings'];
-      t.classList.toggle('active', panels[i] === name);
-    });
-    document.querySelectorAll('.tab-panel').forEach(p => {
-      p.classList.toggle('active', p.id === 'tab-' + name);
-    });
-    if (name === 'listings' && listingsTotal === 0) loadListings(1);
-  }
-
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  async function doLogin() {
-    const val = document.getElementById('secret-input').value.trim();
-    const errEl = document.getElementById('auth-err');
-    errEl.textContent = '';
-    try {
-      const res = await fetch(`/api/admin/status?token=${encodeURIComponent(val)}`);
-      if (res.status === 401) { errEl.textContent = 'Invalid secret.'; return; }
-      if (!res.ok) { errEl.textContent = 'Server error. Is the backend running?'; return; }
-      TOKEN = val;
-      document.getElementById('auth-gate').style.display = 'none';
-      document.getElementById('dashboard').style.display = 'block';
-      initDashboard();
-    } catch (e) {
-      errEl.textContent = 'Could not reach server.';
+    function fmtMoney(value) {
+      return value ? '$' + Number(value).toLocaleString() : '-';
     }
-  }
 
-  // ── Init ──────────────────────────────────────────────────────────────────
-  async function initDashboard() {
-    await Promise.all([loadLogs(), loadBatUrls(), loadCarsComUrls(), loadCarsAndBidsUrls()]);
-    connectWebSocket();
-    setInterval(pollStatus, 3000);
-    pollStatus();
-  }
+    function esc(value) {
+      return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
 
-  async function pollStatus() {
-    try {
-      const res = await fetch(`/api/admin/status?token=${encodeURIComponent(TOKEN)}`);
+    async function pollStatus() {
+      const res = await fetch('/api/admin/status');
       if (!res.ok) return;
       const data = await res.json();
-      setRunningState(data.is_running);
-    } catch (_) {}
-  }
-
-  function setRunningState(running) {
-    const pill = document.getElementById('running-pill');
-    const btnScrape = document.getElementById('btn-scrape');
-    const btnStop = document.getElementById('btn-stop');
-    const btnDepr = document.getElementById('btn-depreciation');
-    if (running) {
-      pill.textContent = 'Running';
-      pill.className = 'status-pill pill-running';
-      btnScrape.disabled = true;
-      btnStop.disabled = false;
-      btnDepr.disabled = true;
-    } else {
-      pill.textContent = 'Idle';
-      pill.className = 'status-pill pill-idle';
-      btnScrape.disabled = false;
-      btnStop.disabled = true;
-      btnDepr.disabled = false;
+      document.getElementById('run-label').textContent = data.isRunning ? 'Running' : 'Idle';
+      document.getElementById('run-btn').disabled = data.isRunning;
+      document.getElementById('stop-btn').disabled = !data.isRunning;
     }
-  }
 
-  // ── Car selectors ────────────────────────────────────────────────────────
-  async function loadBatUrls() {
-    try {
-      const res = await fetch(`/api/admin/scrapers/bat/urls?token=${encodeURIComponent(TOKEN)}`);
-      if (!res.ok) return;
-      batUrls = await res.json();
-      renderSelector('bat', batUrls);
-    } catch (_) {}
-  }
+    function connectWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}/api/admin/ws/stream`);
+      ws.onopen = () => {
+        document.getElementById('ws-dot').classList.add('on');
+        document.getElementById('ws-label').textContent = 'Connected';
+      };
+      ws.onclose = () => {
+        document.getElementById('ws-dot').classList.remove('on');
+        document.getElementById('ws-label').textContent = 'Disconnected';
+        setTimeout(connectWebSocket, 5000);
+      };
+      ws.onmessage = event => {
+        try { appendEvent(JSON.parse(event.data)); } catch (_) {}
+      };
+    }
 
-  async function loadCarsComUrls() {
-    try {
-      const res = await fetch(`/api/admin/scrapers/cars_com/urls?token=${encodeURIComponent(TOKEN)}`);
-      if (!res.ok) return;
-      carsComUrls = await res.json();
-      renderSelector('cc', carsComUrls);
-    } catch (_) {}
-  }
-
-  async function loadCarsAndBidsUrls() {
-    try {
-      const res = await fetch(`/api/admin/scrapers/cars_and_bids/urls?token=${encodeURIComponent(TOKEN)}`);
-      if (!res.ok) return;
-      cabUrls = await res.json();
-      renderSelector('cab', cabUrls);
-    } catch (_) {}
-  }
-
-  function renderSelector(prefix, entries) {
-    const container = document.getElementById(prefix + '-car-selector');
-    let currentMake = '';
-    let html = '<div class="car-list">';
-    for (const entry of entries) {
-      const make = entry.label.split(' ')[0];
-      if (make !== currentMake) {
-        currentMake = make;
-        html += `<div class="car-group-label">${escHtml(make)}</div>`;
+    function appendEvent(event) {
+      const feed = document.getElementById('feed');
+      const row = document.createElement('div');
+      row.className = 'line';
+      row.textContent = `[${event.source}] ${event.message}`;
+      feed.appendChild(row);
+      feed.scrollTop = feed.scrollHeight;
+      if (['complete', 'error', 'done'].includes(event.type)) {
+        pollStatus();
+        loadRuns();
+        loadLots(currentPage);
       }
-      const id = prefix + '-' + entry.key;
-      html += `<div class="car-item" onclick="toggleCar('${id}')">
-        <input type="checkbox" id="${id}" checked data-key="${entry.key}" data-prefix="${prefix}">
-        <label for="${id}">${escHtml(entry.label)}</label>
-      </div>`;
-    }
-    html += '</div>';
-    container.innerHTML = html;
-    updateCarCount(prefix);
-  }
-
-  function toggleCar(id) {
-    const cb = document.getElementById(id);
-    cb.checked = !cb.checked;
-    updateCarCount(cb.dataset.prefix);
-  }
-
-  function toggleAll(prefix, state) {
-    document.querySelectorAll('#' + prefix + '-car-selector input[type=checkbox]').forEach(cb => cb.checked = state);
-    updateCarCount(prefix);
-  }
-
-  function updateCarCount(prefix) {
-    const sel = '#' + prefix + '-car-selector input[type=checkbox]';
-    const all = document.querySelectorAll(sel);
-    const checked = document.querySelectorAll(sel + ':checked');
-    document.getElementById(prefix + '-car-count').textContent = `${checked.length} / ${all.length}`;
-  }
-
-  function getSelectedKeys(prefix) {
-    const checked = document.querySelectorAll('#' + prefix + '-car-selector input[type=checkbox]:checked');
-    return Array.from(checked).map(cb => cb.dataset.key);
-  }
-
-  // ── WebSocket ──────────────────────────────────────────────────────────────
-  function connectWebSocket() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/api/admin/ws/stream?token=${encodeURIComponent(TOKEN)}`;
-    ws = new WebSocket(url);
-
-    ws.onopen = () => setWsStatus(true);
-    ws.onclose = () => {
-      setWsStatus(false);
-      setTimeout(connectWebSocket, 5000);
-    };
-    ws.onerror = () => setWsStatus(false);
-    ws.onmessage = (e) => {
-      try { handleEvent(JSON.parse(e.data)); } catch (_) {}
-    };
-  }
-
-  function setWsStatus(connected) {
-    const dot = document.getElementById('ws-dot');
-    const label = document.getElementById('ws-label');
-    dot.className = 'ws-indicator ' + (connected ? 'ws-connected' : 'ws-disconnected');
-    label.textContent = connected ? 'WebSocket connected' : 'WebSocket disconnected';
-  }
-
-  function handleEvent(evt) {
-    appendLog(evt);
-    updateProgressBar(evt);
-    if (evt.type === 'done' || evt.type === 'complete' || evt.type === 'error') {
-      setRunningState(false);
-      setProgressBar(0);
-      setTimeout(loadLogs, 800);
-    }
-    if (evt.type === 'start') setRunningState(true);
-  }
-
-  function updateProgressBar(evt) {
-    const d = evt.data || {};
-    if (d.term_index && d.total_terms) {
-      setProgressBar((d.term_index / d.total_terms) * 100);
-    }
-  }
-
-  function setProgressBar(pct) {
-    document.getElementById('progress-bar').style.width = pct + '%';
-  }
-
-  function appendLog(evt) {
-    const feed = document.getElementById('log-feed');
-    if (logEmpty) {
-      document.getElementById('log-empty')?.remove();
-      logEmpty = false;
-    }
-    const ts = evt.timestamp ? new Date(evt.timestamp).toLocaleTimeString() : '';
-    const line = document.createElement('div');
-    line.className = `log-line log-${evt.type}`;
-    line.innerHTML =
-      `<span class="log-ts">${ts}</span>` +
-      `<span class="log-source">${escHtml(evt.source)}</span>` +
-      `<span class="log-msg">${escHtml(evt.message)}</span>`;
-    feed.appendChild(line);
-
-    // Add detail line for pages with skip/dup data
-    const d = evt.data || {};
-    if (d.raw_items !== undefined) {
-      const detail = document.createElement('div');
-      detail.className = 'log-detail';
-      const parts = [`${d.raw_items} raw`];
-      if (d.sold_parsed !== undefined) parts.push(`${d.sold_parsed} sold`);
-      if (d.duplicates) parts.push(`${d.duplicates} dups`);
-      if (d.skipped && Object.keys(d.skipped).length) {
-        const skipParts = Object.entries(d.skipped).map(([k,v]) => `${v} ${k}`);
-        parts.push(`skipped: ${skipParts.join(', ')}`);
-      }
-      detail.textContent = parts.join('  ·  ');
-      feed.appendChild(detail);
     }
 
-    feed.scrollTop = feed.scrollHeight;
-  }
-
-  function clearFeed() {
-    const feed = document.getElementById('log-feed');
-    feed.innerHTML = '<div id="log-empty" style="color:var(--muted);font-style:italic">Waiting for scrape events…</div>';
-    logEmpty = true;
-    setProgressBar(0);
-  }
-
-  function escHtml(s) {
-    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
-
-  // ── Logs table ──────────────────────────────────────────────────────────────
-  async function loadLogs() {
-    try {
-      const res = await fetch(`/api/admin/logs?limit=50&token=${encodeURIComponent(TOKEN)}`);
-      if (!res.ok) return;
-      const logs = await res.json();
-      renderLogs(logs);
-      updateStats(logs);
-    } catch (_) {}
-  }
-
-  function renderLogs(logs) {
-    const tbody = document.getElementById('logs-tbody');
-    if (!logs.length) {
-      tbody.innerHTML = '<tr><td colspan="6" id="no-logs">No scrape runs yet.</td></tr>';
-      return;
-    }
-    tbody.innerHTML = logs.map(l => {
-      const started = new Date(l.started_at).toLocaleString();
-      let duration = '—';
-      if (l.finished_at) {
-        const ms = new Date(l.finished_at) - new Date(l.started_at);
-        duration = ms < 60000 ? `${Math.round(ms/1000)}s` : `${Math.round(ms/60000)}m`;
-      }
-      const status = l.error
-        ? `<span class="badge badge-err">Error</span>`
-        : !l.finished_at
-          ? `<span class="badge badge-running">Running</span>`
-          : `<span class="badge badge-ok">OK</span>`;
-      return `<tr>
-        <td>${escHtml(l.source)}</td>
-        <td>${started}</td>
-        <td>${duration}</td>
-        <td>${l.records_found}</td>
-        <td>${l.records_inserted}</td>
-        <td>${status}</td>
-      </tr>`;
-    }).join('');
-  }
-
-  function updateStats(logs) {
-    document.getElementById('stat-total').textContent = logs.length;
-    if (logs.length) {
-      const last = logs[0];
-      document.getElementById('stat-last').textContent =
-        new Date(last.started_at).toLocaleString();
-      document.getElementById('stat-inserted').textContent = last.records_inserted;
-    }
-    const errors = logs.filter(l => l.error).length;
-    const errEl = document.getElementById('stat-errors');
-    errEl.textContent = errors;
-    errEl.className = 'value ' + (errors > 0 ? 'red' : 'green');
-  }
-
-  // ── Actions ──────────────────────────────────────────────────────────────────
-  async function triggerScrape() {
-    const batKeys = getSelectedKeys('bat');
-    const ccKeys = getSelectedKeys('cc');
-    const cabKeys = getSelectedKeys('cab');
-    if (batKeys.length === 0 && ccKeys.length === 0 && cabKeys.length === 0) {
-      alert('Select at least one car page to scrape.');
-      return;
-    }
-    clearFeed();
-    // null = scrape all for that source; explicit list = subset; empty list = skip source
-    const body = {};
-    if (batKeys.length === 0) body.bat_selected_keys = [];
-    else if (batKeys.length < batUrls.length) body.bat_selected_keys = batKeys;
-    if (ccKeys.length === 0) body.cars_com_selected_keys = [];
-    else if (ccKeys.length < carsComUrls.length) body.cars_com_selected_keys = ccKeys;
-    if (cabKeys.length === 0) body.carsandbids_selected_keys = [];
-    else if (cabKeys.length < cabUrls.length) body.carsandbids_selected_keys = cabKeys;
-    try {
-      const res = await fetch(`/api/admin/scrape/trigger?token=${encodeURIComponent(TOKEN)}`, {
+    async function triggerScrape() {
+      const mode = document.getElementById('scrape-mode').value;
+      const res = await fetch('/api/admin/scrape/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ mode }),
       });
-      if (res.status === 409) { alert('A scrape is already running.'); return; }
-      if (!res.ok) { alert('Failed to start scrape.'); return; }
-      setRunningState(true);
-      if (!ws || ws.readyState !== WebSocket.OPEN) connectWebSocket();
-    } catch (e) { alert('Error: ' + e.message); }
-  }
+      if (!res.ok) alert('Failed to start scrape');
+      pollStatus();
+    }
 
-  async function stopScrape() {
-    try {
-      const res = await fetch(`/api/admin/scrape/stop?token=${encodeURIComponent(TOKEN)}`, { method: 'POST' });
-      if (res.status === 409) { alert('No scrape is currently running.'); return; }
-      if (!res.ok) { alert('Failed to stop scrape.'); return; }
-      document.getElementById('btn-stop').disabled = true;
-    } catch (e) { alert('Error: ' + e.message); }
-  }
+    async function stopScrape() {
+      const res = await fetch('/api/admin/scrape/stop', { method: 'POST' });
+      if (!res.ok) alert('Failed to stop scrape');
+      pollStatus();
+    }
 
-  async function triggerDepreciation() {
-    try {
-      const res = await fetch(`/api/admin/depreciation/trigger?token=${encodeURIComponent(TOKEN)}`, { method: 'POST' });
-      if (!res.ok) { alert('Failed to start depreciation run.'); return; }
-      setRunningState(true);
-    } catch (e) { alert('Error: ' + e.message); }
-  }
+    function lotParams(page) {
+      const params = new URLSearchParams({ page, page_size: pageSize });
+      const fields = [
+        ['source', 'filter-source'],
+        ['auction_status', 'filter-status'],
+        ['make', 'filter-make'],
+        ['model', 'filter-model'],
+        ['year', 'filter-year'],
+        ['ended_from', 'filter-ended-from'],
+        ['ended_to', 'filter-ended-to'],
+        ['is_sold', 'filter-is-sold'],
+      ];
+      for (const [key, id] of fields) {
+        const value = document.getElementById(id).value;
+        if (value) params.set(key, value);
+      }
+      return params;
+    }
 
-  // ── Listings tab ──────────────────────────────────────────────────────────
-  async function loadListings(page) {
-    listingsCurrentPage = page;
-    const source = document.getElementById('filter-source').value;
-    const dateFrom = document.getElementById('filter-date-from').value;
-    const dateTo = document.getElementById('filter-date-to').value;
-    const sold = document.getElementById('filter-sold').value;
-
-    const params = new URLSearchParams({
-      token: TOKEN,
-      page,
-      page_size: LISTINGS_PAGE_SIZE,
-    });
-    if (source) params.set('source', source);
-    if (dateFrom) params.set('date_from', dateFrom);
-    if (dateTo) params.set('date_to', dateTo);
-    if (sold !== '') params.set('is_sold', sold);
-
-    const tbody = document.getElementById('listings-tbody');
-    tbody.innerHTML = '<tr><td colspan="10" style="padding:16px 14px;color:var(--muted)">Loading…</td></tr>';
-
-    try {
-      const res = await fetch(`/api/admin/sales?${params}`);
-      if (!res.ok) { tbody.innerHTML = '<tr><td colspan="10" style="color:var(--red);padding:14px">Failed to load.</td></tr>'; return; }
+    async function loadLots(page) {
+      currentPage = Math.max(1, page);
+      const res = await fetch(`/api/admin/lots?${lotParams(currentPage)}`);
+      if (!res.ok) return;
       const data = await res.json();
-      listingsTotal = data.total;
-      renderListings(data);
-    } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="10" style="color:var(--red);padding:14px">${escHtml(e.message)}</td></tr>`;
+      totalLots = data.total;
+      const body = document.getElementById('lots-body');
+      if (!data.items.length) {
+        body.innerHTML = '<tr><td colspan="9" class="muted">No lots match the filters.</td></tr>';
+      } else {
+        body.innerHTML = data.items.map(lot => {
+          const vehicle = [lot.year, lot.make, lot.model, lot.trim].filter(Boolean).join(' ') || lot.title || '-';
+          const statusClass = lot.auctionStatus === 'sold' ? 'sold' : 'unsold';
+          const ended = lot.endedAt ? new Date(lot.endedAt).toLocaleDateString() : '-';
+          return `<tr>
+            <td>${esc(vehicle)}<div class="muted">${esc(lot.subtitle || '')}</div></td>
+            <td>${esc(lot.source.replaceAll('_', ' '))}</td>
+            <td><span class="badge ${statusClass}">${esc(lot.auctionStatus)}</span></td>
+            <td>${fmtMoney(lot.soldPrice)}</td>
+            <td>${fmtMoney(lot.highBid)}</td>
+            <td>${lot.bidCount ?? '-'}</td>
+            <td>${ended}</td>
+            <td>${lot.imageCount}</td>
+            <td><a href="${esc(lot.canonicalUrl)}" target="_blank" rel="noopener">source</a> · <a href="#" onclick="loadLotDetail('${lot.id}')">raw</a></td>
+          </tr>`;
+        }).join('');
+      }
+      const start = totalLots ? (currentPage - 1) * pageSize + 1 : 0;
+      const end = Math.min(currentPage * pageSize, totalLots);
+      document.getElementById('page-info').textContent = `${start}-${end} of ${totalLots.toLocaleString()}`;
+      document.getElementById('prev-btn').disabled = currentPage <= 1;
+      document.getElementById('next-btn').disabled = end >= totalLots;
     }
-  }
 
-  function renderListings(data) {
-    const tbody = document.getElementById('listings-tbody');
-    const { items, total, page, page_size } = data;
-
-    document.getElementById('listings-count').textContent =
-      total === 0 ? 'No results' : `${total.toLocaleString()} total`;
-
-    const start = (page - 1) * page_size + 1;
-    const end = Math.min(page * page_size, total);
-    document.getElementById('listings-page-info').textContent =
-      total > 0 ? `${start}–${end} of ${total.toLocaleString()}` : '';
-
-    document.getElementById('btn-prev').disabled = page <= 1;
-    document.getElementById('btn-next').disabled = end >= total;
-
-    if (!items.length) {
-      tbody.innerHTML = '<tr><td colspan="10" style="padding:20px 14px;color:var(--muted);font-style:italic">No listings match the current filters.</td></tr>';
-      return;
+    async function loadLotDetail(id) {
+      const res = await fetch(`/api/admin/lots/${id}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      document.getElementById('lot-detail').textContent = JSON.stringify(data, null, 2);
     }
 
-    tbody.innerHTML = items.map(s => {
-      const car = `${escHtml(s.car_make)} ${escHtml(s.car_model)} ${escHtml(s.car_trim)}`;
-      const soldPrice = s.sold_price ? '$' + s.sold_price.toLocaleString() : '—';
-      const askPrice = '$' + s.asking_price.toLocaleString();
-      const mileage = s.mileage ? s.mileage.toLocaleString() + ' mi' : '—';
-      const color = s.color || '—';
-      const status = s.is_sold
-        ? '<span class="badge badge-ok">Sold</span>'
-        : '<span class="badge" style="background:#1a1a2a;color:var(--muted)">Unsold</span>';
-      const listed = new Date(s.listed_at).toLocaleDateString();
-      const source = escHtml(s.source.replace(/_/g, ' '));
-      const link = `<a href="${escHtml(s.source_url)}" target="_blank" rel="noopener">↗</a>`;
-      return `<tr>
-        <td>${car}</td>
-        <td>${s.year}</td>
-        <td>${source}</td>
-        <td>${soldPrice}</td>
-        <td>${askPrice}</td>
-        <td>${mileage}</td>
-        <td>${color}</td>
-        <td>${status}</td>
-        <td>${listed}</td>
-        <td>${link}</td>
-      </tr>`;
-    }).join('');
-  }
+    async function loadRuns() {
+      const res = await fetch('/api/admin/logs?limit=50');
+      if (!res.ok) return;
+      const runs = await res.json();
+      const body = document.getElementById('runs-body');
+      if (!runs.length) {
+        body.innerHTML = '<tr><td colspan="8" class="muted">No runs yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = runs.map(run => `
+        <tr>
+          <td>${esc(run.source)}</td>
+          <td>${esc(run.mode)}</td>
+          <td>${esc(run.status)}</td>
+          <td>${new Date(run.startedAt).toLocaleString()}</td>
+          <td>${run.recordsFound}</td>
+          <td>${run.recordsInserted}</td>
+          <td>${run.recordsUpdated}</td>
+          <td>${esc(run.error || '')}</td>
+        </tr>
+      `).join('');
+    }
 
-  function listingsPage(delta) {
-    loadListings(listingsCurrentPage + delta);
-  }
+    function clearFilters() {
+      for (const id of [
+        'filter-source',
+        'filter-status',
+        'filter-is-sold',
+        'filter-make',
+        'filter-model',
+        'filter-year',
+        'filter-ended-from',
+        'filter-ended-to',
+      ]) {
+        document.getElementById(id).value = '';
+      }
+      loadLots(1);
+    }
 
-  function clearListingFilters() {
-    document.getElementById('filter-source').value = '';
-    document.getElementById('filter-date-from').value = '';
-    document.getElementById('filter-date-to').value = '';
-    document.getElementById('filter-sold').value = '';
-    loadListings(1);
-  }
-</script>
+    window.addEventListener('DOMContentLoaded', () => {
+      connectWebSocket();
+      pollStatus();
+      loadRuns();
+      loadLots(1);
+      setInterval(pollStatus, 3000);
+    });
+  </script>
 </body>
-</html>"""
+</html>

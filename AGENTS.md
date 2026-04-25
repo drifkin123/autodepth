@@ -1,4 +1,4 @@
-# CLAUDE.md — AutoDepth Project Brief & System Directives
+# AGENTS.md — AutoDepth Project Brief & System Directives
 
 ## System & Agent Directives
 You are an expert software engineer operating within this monorepo. You must strictly adhere to the following operational laws:
@@ -57,7 +57,7 @@ This is a solo developer project. Prioritize clarity, maintainability, and shipp
 ## Monorepo Structure
 ```text
 autodepth/
-├── CLAUDE.md                  ← you are here
+├── AGENTS.md                  ← you are here
 ├── apps/
 │   ├── web/                   ← React + Vite web app
 │   │   ├── src/
@@ -204,7 +204,7 @@ Overlaid depreciation curves on a single chart (each car a different color).
 
 Side-by-side stats table: current avg price, 1yr change, 3yr projection, production count, rarity score.
 
-"Which is the better buy right now?" AI-generated summary (via Claude API).
+"Which is the better buy right now?" AI-generated summary (via Codex API).
 
 4. Market — /market
 Recent notable auction results across all tracked cars.
@@ -311,7 +311,7 @@ Garage page: watchlist UI, buy window badges.
 
 Car deep-dive page: price history chart, depreciation curve, recent sales table.
 
-Compare page: multi-car chart overlay, stats table, Claude API summary.
+Compare page: multi-car chart overlay, stats table, Codex API summary.
 
 Market page: recent auctions feed, trending movers.
 

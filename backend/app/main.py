@@ -6,7 +6,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, cars, predictions, watchlist
+from app.api import admin
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,9 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(cars.router, prefix="/api")
-app.include_router(predictions.router, prefix="/api")
-app.include_router(watchlist.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 
 

@@ -1,8 +1,11 @@
-from app.models.car import Car
-from app.models.vehicle_sale import VehicleSale
-from app.models.price_prediction import PricePrediction
-from app.models.watchlist import WatchlistItem
-from app.models.scrape_log import ScrapeLog
-from app.models.listing_snapshot import ListingSnapshot
+from app.models.auction_image import AuctionImage
+from app.models.auction_lot import AuctionLot
+from app.models.crawl_state import CrawlState
+from app.models.scrape_run import ScrapeRun
 
-__all__ = ["Car", "VehicleSale", "PricePrediction", "WatchlistItem", "ScrapeLog", "ListingSnapshot"]
+__all__ = [
+    "AuctionLot",
+    "AuctionImage",
+    "CrawlState",
+    "ScrapeRun",
+]
