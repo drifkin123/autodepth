@@ -16,6 +16,7 @@ from app.scrapers.bat_parser import (
 )
 from app.scrapers.bring_a_trailer import (
     BringATrailerScraper,
+    build_completed_results_params,
     extract_model_entries_from_html,
     get_url_entries,
 )
@@ -156,6 +157,7 @@ def test_bat_extracts_completed_pagination_telemetry() -> None:
     html = """
     <script>
       var auctionsCompletedInitialData = {
+        "base_filter": {"keyword_s": "Porsche", "items_type": "make"},
         "items": [],
         "items_total": 18413,
         "items_per_page": 24,
@@ -168,8 +170,74 @@ def test_bat_extracts_completed_pagination_telemetry() -> None:
     metadata = extract_completed_metadata_from_html(html)
 
     assert metadata == {
+        "base_filter": {"keyword_s": "Porsche", "items_type": "make"},
         "items_total": 18413,
         "items_per_page": 24,
         "page_current": 1,
         "pages_total": 768,
     }
+
+
+def test_bat_builds_show_more_params_from_base_filter() -> None:
+    params = build_completed_results_params(
+        {"keyword_s": "Porsche", "items_type": "make"},
+        page=2,
+        per_page=24,
+    )
+
+    assert params == [
+        ("page", 2),
+        ("per_page", 24),
+        ("get_items", 1),
+        ("get_stats", 0),
+        ("sort", "td"),
+        ("base_filter[keyword_s]", "Porsche"),
+        ("base_filter[items_type]", "make"),
+    ]
+
+
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_completed_results_page", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_page_result", new_callable=AsyncMock)
+async def test_bat_fetches_show_more_completed_result_pages(
+    mock_fetch_page_result: AsyncMock,
+    mock_fetch_completed_results_page: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    second_item = {
+        **SOLD_ITEM,
+        "id": 108526571,
+        "url": "https://bringatrailer.com/listing/1987-porsche-928-s4-171/",
+        "title": "1987 Porsche 928 S4",
+    }
+    mock_fetch_page_result.return_value = (
+        [SOLD_ITEM],
+        {
+            "base_filter": {"keyword_s": "Porsche", "items_type": "make"},
+            "items_total": 48,
+            "items_per_page": 24,
+            "page_current": 1,
+            "pages_total": 2,
+        },
+    )
+    mock_fetch_completed_results_page.return_value = (
+        [second_item],
+        {
+            "items_total": 48,
+            "items_per_page": 24,
+            "page_current": 2,
+            "pages_total": 2,
+        },
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    lots = await BringATrailerScraper(
+        session,
+        None,
+        selected_keys={"porsche"},
+        mode="backfill",
+    ).scrape()
+
+    assert [lot.source_auction_id for lot in lots] == ["108526570", "108526571"]
+    mock_fetch_completed_results_page.assert_awaited_once()
