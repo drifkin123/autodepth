@@ -30,9 +30,11 @@ from app.scrapers.runtime import (
 
 BASE_URL = "https://bringatrailer.com"
 MODELS_URL = f"{BASE_URL}/models/"
+LISTINGS_FILTER_URL = f"{BASE_URL}/wp-json/bringatrailer/1.0/data/listings-filter"
 
 _HEADERS = BROWSER_HEADERS
 _RETRY_POLICY = RetryPolicy(max_attempts=3, base_delay_seconds=2.0, max_delay_seconds=30.0)
+_INCREMENTAL_COMPLETED_PAGE_LIMIT = 5
 
 
 def get_all_url_keys() -> list[str]:
@@ -105,6 +107,51 @@ async def fetch_page_result(client: httpx.AsyncClient, url_path: str) -> tuple[l
     return extract_items_from_html(resp.text), extract_completed_metadata_from_html(resp.text)
 
 
+def build_completed_results_params(
+    base_filter: dict,
+    *,
+    page: int,
+    per_page: int,
+) -> list[tuple[str, object]]:
+    params: list[tuple[str, object]] = [
+        ("page", page),
+        ("per_page", per_page),
+        ("get_items", 1),
+        ("get_stats", 0),
+        ("sort", "td"),
+    ]
+    for key, value in base_filter.items():
+        if value is None:
+            continue
+        params.append((f"base_filter[{key}]", value))
+    return params
+
+
+async def fetch_completed_results_page(
+    client: httpx.AsyncClient,
+    *,
+    base_filter: dict,
+    page: int,
+    per_page: int,
+    referer_url: str,
+) -> tuple[list[dict], dict]:
+    resp = await client.get(
+        LISTINGS_FILTER_URL,
+        params=build_completed_results_params(base_filter, page=page, per_page=per_page),
+        headers={**_HEADERS, "Referer": referer_url},
+        follow_redirects=True,
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("items", []), {
+        "items_total": data.get("items_total"),
+        "items_per_page": data.get("items_per_page"),
+        "page_current": data.get("page_current"),
+        "pages_total": data.get("pages_total"),
+    }
+
+
 class BringATrailerScraper(BaseScraper):
     source = SOURCE
 
@@ -125,18 +172,54 @@ class BringATrailerScraper(BaseScraper):
             if key in self._selected_keys
         ]
 
+    def _completed_page_limit(self, pages_total: int) -> int:
+        if self.mode == "backfill":
+            return pages_total
+        return min(pages_total, _INCREMENTAL_COMPLETED_PAGE_LIMIT)
+
+    def _parse_page_items(
+        self,
+        items: list[dict],
+        *,
+        seen_urls: set[str],
+        all_lots: list[ScrapedAuctionLot],
+    ) -> tuple[int, int, dict]:
+        new_count, dup_count, skip_counts = 0, 0, {}
+        for item in items:
+            listing, reason = parse_item(item)
+            if listing is None:
+                skip_counts[reason] = skip_counts.get(reason, 0) + 1
+            elif listing.canonical_url in seen_urls:
+                dup_count += 1
+            else:
+                seen_urls.add(listing.canonical_url)
+                all_lots.append(listing)
+                new_count += 1
+        return new_count, dup_count, skip_counts
+
     async def _fetch_page_with_retries(
         self,
         client: httpx.AsyncClient,
         *,
         label: str,
         url_path: str,
+        page: int = 1,
+        base_filter: dict | None = None,
+        per_page: int | None = None,
     ) -> tuple[list[dict], dict] | None:
         url = f"{BASE_URL}/{url_path}/"
         for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
             started = time.perf_counter()
             try:
-                return await fetch_page_result(client, url_path)
+                if page == 1:
+                    return await fetch_page_result(client, url_path)
+                return await fetch_completed_results_page(
+                    client,
+                    base_filter=base_filter or {},
+                    page=page,
+                    per_page=per_page or 24,
+                    referer_url=url,
+                )
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code if exc.response else None
                 duration_ms = int((time.perf_counter() - started) * 1000)
@@ -150,14 +233,18 @@ class BringATrailerScraper(BaseScraper):
                         outcome="blocked",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
-                        metadata_json={"target": label},
+                        metadata_json={"target": label, "page": page},
                     )
                     await self.record_anomaly(
                         severity="critical",
                         code="blocked_response",
                         message=f"BaT blocked or rate-limited request for {label}.",
                         url=url,
-                        metadata_json={"status_code": status_code, "attempt": attempt},
+                        metadata_json={
+                            "status_code": status_code,
+                            "attempt": attempt,
+                            "page": page,
+                        },
                     )
                     raise BlockedScrapeError(str(exc), status_code=status_code) from exc
                 if status_code is not None and status_code >= 500:
@@ -176,7 +263,7 @@ class BringATrailerScraper(BaseScraper):
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                         retry_delay_seconds=delay,
-                        metadata_json={"target": label},
+                        metadata_json={"target": label, "page": page},
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -189,7 +276,7 @@ class BringATrailerScraper(BaseScraper):
                     outcome="error",
                     error_type=type(exc).__name__,
                     error_message=str(exc),
-                    metadata_json={"target": label},
+                    metadata_json={"target": label, "page": page},
                 )
                 return None
             except (httpx.TimeoutException, httpx.TransportError) as exc:
@@ -205,7 +292,7 @@ class BringATrailerScraper(BaseScraper):
                         error_type=type(exc).__name__,
                         error_message=str(exc),
                         retry_delay_seconds=delay,
-                        metadata_json={"target": label},
+                        metadata_json={"target": label, "page": page},
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -217,7 +304,7 @@ class BringATrailerScraper(BaseScraper):
                     outcome="error",
                     error_type=type(exc).__name__,
                     error_message=str(exc),
-                    metadata_json={"target": label},
+                    metadata_json={"target": label, "page": page},
                 )
                 return None
         return None
@@ -292,17 +379,16 @@ class BringATrailerScraper(BaseScraper):
                     continue
                 items, page_metadata = result
 
-                new_count, dup_count, skip_counts = 0, 0, {}
-                for item in items:
-                    listing, reason = parse_item(item)
-                    if listing is None:
-                        skip_counts[reason] = skip_counts.get(reason, 0) + 1
-                    elif listing.canonical_url in seen_urls:
-                        dup_count += 1
-                    else:
-                        seen_urls.add(listing.canonical_url)
-                        all_lots.append(listing)
-                        new_count += 1
+                new_count, dup_count, skip_counts = self._parse_page_items(
+                    items,
+                    seen_urls=seen_urls,
+                    all_lots=all_lots,
+                )
+                pages_total = int(page_metadata.get("pages_total") or 1)
+                items_total = page_metadata.get("items_total")
+                items_per_page = int(page_metadata.get("items_per_page") or len(items) or 24)
+                base_filter = page_metadata.get("base_filter") or {}
+                page_limit = self._completed_page_limit(pages_total)
 
                 await self.record_request_log(
                     url=f"{BASE_URL}/{url_path}/",
@@ -319,18 +405,17 @@ class BringATrailerScraper(BaseScraper):
                         "key": key,
                         "duplicates": dup_count,
                         **page_metadata,
-                        "pagination_complete": (page_metadata.get("pages_total") or 1) <= 1,
+                        "page_limit": page_limit,
+                        "pagination_complete": page_limit >= pages_total,
                     },
                 )
-                pages_total = page_metadata.get("pages_total") or 1
-                items_total = page_metadata.get("items_total")
-                if pages_total > 1:
+                if pages_total > 1 and page_limit < pages_total:
                     await self.record_anomaly(
                         severity="warning",
                         code="bat_pagination_incomplete",
                         message=(
                             f"BaT page {label} exposes {pages_total} completed-result "
-                            "pages; this run parsed only the first page."
+                            f"pages; {self.mode} mode will parse {page_limit} pages."
                         ),
                         url=f"{BASE_URL}/{url_path}/",
                         metadata_json={
@@ -338,7 +423,17 @@ class BringATrailerScraper(BaseScraper):
                             "pages_total": pages_total,
                             "page_current": page_metadata.get("page_current"),
                             "parsed_first_page": new_count,
+                            "page_limit": page_limit,
+                            "mode": self.mode,
                         },
+                    )
+                if pages_total > 1 and not base_filter:
+                    await self.record_anomaly(
+                        severity="critical",
+                        code="bat_pagination_missing_filter",
+                        message=f"BaT page {label} has more pages but no base_filter metadata.",
+                        url=f"{BASE_URL}/{url_path}/",
+                        metadata_json={"pages_total": pages_total},
                     )
                 if len(items) > 0 and new_count == 0:
                     await self.record_anomaly(
@@ -358,6 +453,72 @@ class BringATrailerScraper(BaseScraper):
                     f"[{i}/{len(urls)}] {label}: {len(items)} raw → "
                     f"{new_count} auctions{total_s}{page_s}{dup_s}{skip_s} "
                     f"(run total: {len(all_lots)})")
+
+                for page_number in range(2, page_limit + 1):
+                    if self._is_cancelled():
+                        await self._emit(
+                            "warning",
+                            f"Scrape cancelled during {label} page {page_number}/{page_limit}.",
+                        )
+                        break
+                    if not base_filter:
+                        break
+                    await asyncio.sleep(polite_delay_seconds(1.5, 4.0))
+                    try:
+                        started = time.perf_counter()
+                        page_result = await self._fetch_page_with_retries(
+                            client,
+                            label=label,
+                            url_path=url_path,
+                            page=page_number,
+                            base_filter=base_filter,
+                            per_page=items_per_page,
+                        )
+                    except BlockedScrapeError as exc:
+                        await self._emit(
+                            "error",
+                            f"[{i}/{len(urls)}] {label} page {page_number}: blocked — {exc}",
+                        )
+                        raise
+                    if page_result is None:
+                        await self._emit(
+                            "error",
+                            f"[{i}/{len(urls)}] {label} page {page_number}: request failed",
+                        )
+                        continue
+
+                    page_items, page_result_metadata = page_result
+                    page_new_count, page_dup_count, page_skip_counts = self._parse_page_items(
+                        page_items,
+                        seen_urls=seen_urls,
+                        all_lots=all_lots,
+                    )
+                    await self.record_request_log(
+                        url=LISTINGS_FILTER_URL,
+                        action="completed_results_page",
+                        attempt=1,
+                        status_code=200,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        outcome="success",
+                        raw_item_count=len(page_items),
+                        parsed_lot_count=page_new_count,
+                        skip_counts=page_skip_counts,
+                        metadata_json={
+                            "label": label,
+                            "key": key,
+                            "duplicates": page_dup_count,
+                            **page_result_metadata,
+                            "pagination_complete": page_number >= pages_total,
+                        },
+                    )
+                    page_dup_s = f", {page_dup_count} dups" if page_dup_count else ""
+                    page_skip_s = f" — skipped: {page_skip_counts}" if page_skip_counts else ""
+                    await self._emit(
+                        "progress",
+                        f"[{i}/{len(urls)}] {label}: page {page_number}/{pages_total} "
+                        f"{len(page_items)} raw → {page_new_count} auctions"
+                        f"{page_dup_s}{page_skip_s} (run total: {len(all_lots)})",
+                    )
 
                 if i < len(urls):
                     await asyncio.sleep(polite_delay_seconds(1.5, 4.0))

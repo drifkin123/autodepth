@@ -197,6 +197,7 @@ def extract_completed_metadata_from_html(html: str) -> dict:
     """Extract pagination/count telemetry from BaT completed-auction payloads."""
     data = extract_completed_data_from_html(html)
     return {
+        "base_filter": data.get("base_filter") or {},
         "items_total": data.get("items_total"),
         "items_per_page": data.get("items_per_page"),
         "page_current": data.get("page_current"),
