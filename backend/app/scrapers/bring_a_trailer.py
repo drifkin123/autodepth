@@ -6,6 +6,7 @@ listing data including sold prices, dates, and titles.
 """
 import asyncio
 import re
+import time
 from html import unescape
 
 import httpx
@@ -17,18 +18,20 @@ from app.scrapers.bat_parser import (
     parse_item,
 )
 from app.scrapers.makes import BAT_MAKES
+from app.scrapers.runtime import (
+    BROWSER_HEADERS,
+    BlockedScrapeError,
+    RetryPolicy,
+    TransientScrapeError,
+    is_block_status,
+    polite_delay_seconds,
+)
 
 BASE_URL = "https://bringatrailer.com"
 MODELS_URL = f"{BASE_URL}/models/"
 
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+_HEADERS = BROWSER_HEADERS
+_RETRY_POLICY = RetryPolicy(max_attempts=3, base_delay_seconds=2.0, max_delay_seconds=30.0)
 
 
 def get_all_url_keys() -> list[str]:
@@ -115,6 +118,103 @@ class BringATrailerScraper(BaseScraper):
             if key in self._selected_keys
         ]
 
+    async def _fetch_page_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        label: str,
+        url_path: str,
+    ) -> list[dict] | None:
+        url = f"{BASE_URL}/{url_path}/"
+        for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
+            started = time.perf_counter()
+            try:
+                return await fetch_page(client, url_path)
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response else None
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                if is_block_status(status_code):
+                    await self.record_request_log(
+                        url=url,
+                        action="http_get",
+                        attempt=attempt,
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                        outcome="blocked",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        metadata_json={"target": label},
+                    )
+                    await self.record_anomaly(
+                        severity="critical",
+                        code="blocked_response",
+                        message=f"BaT blocked or rate-limited request for {label}.",
+                        url=url,
+                        metadata_json={"status_code": status_code, "attempt": attempt},
+                    )
+                    raise BlockedScrapeError(str(exc), status_code=status_code) from exc
+                if status_code is not None and status_code >= 500:
+                    error = TransientScrapeError(str(exc))
+                else:
+                    error = exc
+                if isinstance(error, TransientScrapeError) and attempt < _RETRY_POLICY.max_attempts:
+                    delay = _RETRY_POLICY.delay_for_attempt(attempt)
+                    await self.record_request_log(
+                        url=url,
+                        action="http_get",
+                        attempt=attempt,
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                        outcome="retry",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        retry_delay_seconds=delay,
+                        metadata_json={"target": label},
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                await self.record_request_log(
+                    url=url,
+                    action="http_get",
+                    attempt=attempt,
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    metadata_json={"target": label},
+                )
+                return None
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                if attempt < _RETRY_POLICY.max_attempts:
+                    delay = _RETRY_POLICY.delay_for_attempt(attempt)
+                    await self.record_request_log(
+                        url=url,
+                        action="http_get",
+                        attempt=attempt,
+                        duration_ms=duration_ms,
+                        outcome="retry",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        retry_delay_seconds=delay,
+                        metadata_json={"target": label},
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                await self.record_request_log(
+                    url=url,
+                    action="http_get",
+                    attempt=attempt,
+                    duration_ms=duration_ms,
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    metadata_json={"target": label},
+                )
+                return None
+        return None
+
     async def scrape(self) -> list[ScrapedAuctionLot]:
         all_lots: list[ScrapedAuctionLot] = []
         seen_urls: set[str] = set()
@@ -122,11 +222,36 @@ class BringATrailerScraper(BaseScraper):
         async with httpx.AsyncClient() as client:
             if self._selected_keys is None:
                 try:
+                    started = time.perf_counter()
                     urls = await fetch_model_entries(client)
+                    await self.record_request_log(
+                        url=MODELS_URL,
+                        action="models_directory",
+                        attempt=1,
+                        status_code=200,
+                        duration_ms=int((time.perf_counter() - started) * 1000),
+                        outcome="success",
+                        raw_item_count=len(urls),
+                        parsed_lot_count=len(urls),
+                    )
                 except httpx.HTTPError as exc:
+                    await self.record_request_log(
+                        url=MODELS_URL,
+                        action="models_directory",
+                        attempt=1,
+                        outcome="error",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
                     await self._emit("error", f"Could not load BaT models directory — {exc}")
                     urls = self._get_urls()
                 if not urls:
+                    await self.record_anomaly(
+                        severity="critical",
+                        code="models_directory_empty",
+                        message="BaT models directory returned no crawl targets.",
+                        url=MODELS_URL,
+                    )
                     urls = self._get_urls()
             else:
                 urls = self._get_urls()
@@ -148,9 +273,15 @@ class BringATrailerScraper(BaseScraper):
                     {"label": label, "key": key, "term_index": i, "total_terms": len(urls)})
 
                 try:
-                    items = await fetch_page(client, url_path)
-                except httpx.HTTPError as exc:
-                    await self._emit("error", f"[{i}/{len(urls)}] {label}: HTTP error — {exc}")
+                    started = time.perf_counter()
+                    items = await self._fetch_page_with_retries(
+                        client, label=label, url_path=url_path
+                    )
+                except BlockedScrapeError as exc:
+                    await self._emit("error", f"[{i}/{len(urls)}] {label}: blocked — {exc}")
+                    break
+                if items is None:
+                    await self._emit("error", f"[{i}/{len(urls)}] {label}: request failed")
                     continue
 
                 new_count, dup_count, skip_counts = 0, 0, {}
@@ -165,6 +296,27 @@ class BringATrailerScraper(BaseScraper):
                         all_lots.append(listing)
                         new_count += 1
 
+                await self.record_request_log(
+                    url=f"{BASE_URL}/{url_path}/",
+                    action="http_get",
+                    attempt=1,
+                    status_code=200,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    outcome="success",
+                    raw_item_count=len(items),
+                    parsed_lot_count=new_count,
+                    skip_counts=skip_counts,
+                    metadata_json={"label": label, "key": key, "duplicates": dup_count},
+                )
+                if len(items) > 0 and new_count == 0:
+                    await self.record_anomaly(
+                        severity="warning",
+                        code="zero_parsed_lots",
+                        message=f"BaT page {label} returned raw items but parsed zero lots.",
+                        url=f"{BASE_URL}/{url_path}/",
+                        metadata_json={"raw_item_count": len(items), "skip_counts": skip_counts},
+                    )
+
                 dup_s = f", {dup_count} dups" if dup_count else ""
                 skip_s = f" — skipped: {skip_counts}" if skip_counts else ""
                 level = "warning" if new_count == 0 and len(items) > 0 else "progress"
@@ -173,6 +325,6 @@ class BringATrailerScraper(BaseScraper):
                     f"{new_count} auctions{dup_s}{skip_s} (total: {len(all_lots)})")
 
                 if i < len(urls):
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(polite_delay_seconds(1.5, 4.0))
 
         return all_lots

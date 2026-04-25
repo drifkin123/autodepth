@@ -3,9 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.models.scrape_anomaly import ScrapeAnomaly
+from app.models.scrape_request_log import ScrapeRequestLog
 from app.scrapers.bat_parser import parse_item, parse_mileage, parse_sold_text, parse_year
-from app.scrapers.bring_a_trailer import extract_model_entries_from_html, get_url_entries
+from app.scrapers.bring_a_trailer import (
+    BringATrailerScraper,
+    extract_model_entries_from_html,
+    get_url_entries,
+)
 
 SOLD_ITEM = {
     "active": False,
@@ -104,3 +111,33 @@ def test_bat_targets_are_exposed() -> None:
     entries = get_url_entries()
     assert entries
     assert {"key", "label", "path"} == set(entries[0])
+
+
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_page", new_callable=AsyncMock)
+async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
+    mock_fetch_page: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch_page.return_value = [
+        {
+            **SOLD_ITEM,
+            "title": "Euro Porsche 996 GT3 Recaro Seats",
+            "url": "https://bringatrailer.com/listing/seats-206/",
+        }
+    ]
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    lots = await BringATrailerScraper(session, None, selected_keys={"porsche"}).scrape()
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert lots == []
+    assert logs
+    assert logs[0].source == "bring_a_trailer"
+    assert logs[0].raw_item_count == 1
+    assert logs[0].parsed_lot_count == 0
+    assert logs[0].skip_counts == {"no_year": 1}
+    assert any(anomaly.code == "zero_parsed_lots" for anomaly in anomalies)

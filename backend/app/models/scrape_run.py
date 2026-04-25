@@ -3,7 +3,7 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, Index, Integer, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -22,6 +22,19 @@ class ScrapeRun(Base):
     records_updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+    request_logs = relationship(
+        "ScrapeRequestLog",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        back_populates="scrape_run",
+    )
+    anomalies = relationship(
+        "ScrapeAnomaly",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        back_populates="scrape_run",
+    )
 
     __table_args__ = (
         Index("ix_scrape_runs_source_started_at", "source", "started_at"),

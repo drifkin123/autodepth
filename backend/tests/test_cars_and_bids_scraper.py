@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import UTC
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.models.scrape_anomaly import ScrapeAnomaly
+from app.models.scrape_request_log import ScrapeRequestLog
 from app.scrapers.cars_and_bids import CarsAndBidsScraper, get_url_entries
 from app.scrapers.cars_and_bids_parser import (
     build_source_url,
@@ -116,9 +118,54 @@ def test_cab_targets_are_global_closed_auctions() -> None:
 @patch.object(CarsAndBidsScraper, "_fetch_search_results", new_callable=AsyncMock)
 async def test_scraper_deduplicates_closed_auction_urls(mock_fetch: AsyncMock) -> None:
     mock_fetch.return_value = [SOLD_ITEM, SOLD_ITEM]
-    scraper = CarsAndBidsScraper(AsyncMock(), None, selected_keys=["all"])
+    session = AsyncMock()
+    session.add = MagicMock()
+    scraper = CarsAndBidsScraper(session, None, selected_keys=["all"])
 
     lots = await scraper.scrape()
 
     assert len(lots) == 1
     assert lots[0].canonical_url == "https://carsandbids.com/auctions/abc123/"
+
+
+@patch("app.scrapers.cars_and_bids.asyncio.sleep", new_callable=AsyncMock)
+@patch.object(CarsAndBidsScraper, "_fetch_search_results", new_callable=AsyncMock)
+async def test_cab_records_request_log_for_search_results(
+    mock_fetch: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch.return_value = [SOLD_ITEM]
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    lots = await CarsAndBidsScraper(session, None, selected_keys=["all"]).scrape()
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    assert len(lots) == 1
+    assert logs
+    assert logs[0].source == "cars_and_bids"
+    assert logs[0].action == "closed_auction_search"
+    assert logs[0].raw_item_count == 1
+    assert logs[0].parsed_lot_count == 1
+
+
+@patch("app.scrapers.cars_and_bids.asyncio.sleep", new_callable=AsyncMock)
+@patch.object(CarsAndBidsScraper, "_fetch_search_results", new_callable=AsyncMock)
+async def test_cab_emits_critical_anomaly_when_no_closed_api_response(
+    mock_fetch: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch.return_value = []
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    lots = await CarsAndBidsScraper(session, None, selected_keys=["all"]).scrape()
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert lots == []
+    assert any(
+        anomaly.severity == "critical" and anomaly.code == "no_closed_auction_response"
+        for anomaly in anomalies
+    )

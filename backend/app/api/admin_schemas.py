@@ -19,8 +19,23 @@ class APIModel(BaseModel):
     )
 
 
+class SourceHealthOut(APIModel):
+    source: str
+    state: str
+    last_run_at: datetime | None
+    last_success_at: datetime | None
+    latest_status: str | None
+    records_found: int
+    records_inserted: int
+    records_updated: int
+    latest_anomaly_severity: str | None
+    latest_anomaly_message: str | None
+    is_stale: bool
+
+
 class ScraperStatus(APIModel):
     is_running: bool
+    sources: list[SourceHealthOut] = []
 
 
 class TargetEntry(APIModel):
@@ -129,3 +144,35 @@ class ScrapeRunOut(APIModel):
     records_updated: int
     error: str | None
     metadata_json: dict
+
+
+class ScrapeRequestLogOut(APIModel):
+    id: uuid.UUID
+    scrape_run_id: uuid.UUID | None
+    source: str
+    url: str
+    action: str
+    attempt: int
+    status_code: int | None
+    duration_ms: int | None
+    outcome: str
+    error_type: str | None
+    error_message: str | None
+    retry_delay_seconds: float | None
+    raw_item_count: int | None
+    parsed_lot_count: int | None
+    skip_counts: dict
+    metadata_json: dict
+    created_at: datetime
+
+
+class ScrapeAnomalyOut(APIModel):
+    id: uuid.UUID
+    scrape_run_id: uuid.UUID | None
+    source: str
+    severity: str
+    code: str
+    message: str
+    url: str | None
+    metadata_json: dict
+    created_at: datetime

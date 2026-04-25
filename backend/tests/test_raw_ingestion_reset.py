@@ -18,6 +18,8 @@ def test_metadata_contains_only_ingestion_tables() -> None:
         "auction_lots",
         "auction_images",
         "scrape_runs",
+        "scrape_request_logs",
+        "scrape_anomalies",
         "crawl_state",
     }.issubset(table_names)
     assert "cars" not in table_names

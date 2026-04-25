@@ -25,8 +25,11 @@ from app.api.admin_schemas import (
     AuctionLotListItem,
     AuctionLotOut,
     PaginatedLots,
+    ScrapeAnomalyOut,
+    ScrapeRequestLogOut,
     ScraperStatus,
     ScrapeRunOut,
+    SourceHealthOut,
     TargetEntry,
     TriggerRequest,
 )
@@ -35,7 +38,13 @@ from app.db import async_session_factory, get_db
 from app.models.auction_lot import AuctionLot
 from app.scrapers.bring_a_trailer import get_url_entries as get_bat_target_entries
 from app.scrapers.cars_and_bids import get_url_entries as get_cars_and_bids_target_entries
-from app.services.admin_queries import query_paginated_lots, query_scrape_runs
+from app.services.admin_queries import (
+    query_anomalies,
+    query_paginated_lots,
+    query_request_logs,
+    query_scrape_runs,
+    query_source_health,
+)
 from app.services.scraper import run_scrape_job
 
 logger = logging.getLogger(__name__)
@@ -95,8 +104,14 @@ async def stop_scrape() -> dict:
 
 
 @router.get("/status", response_model=ScraperStatus)
-async def get_status() -> ScraperStatus:
-    return ScraperStatus(is_running=broadcaster.is_running)
+async def get_status(db: AsyncSession | None = Depends(get_db)) -> ScraperStatus:
+    sources: list[SourceHealthOut] = []
+    if db is not None and hasattr(db, "execute"):
+        try:
+            sources = [SourceHealthOut(**row) for row in await query_source_health(db)]
+        except Exception:
+            logger.exception("Failed to query source health")
+    return ScraperStatus(is_running=broadcaster.is_running, sources=sources)
 
 
 @router.get("/lots", response_model=PaginatedLots)
@@ -182,6 +197,54 @@ async def get_scrape_logs(
         logger.exception("Failed to query scrape runs")
         raise HTTPException(status_code=500, detail=f"Database query failed: {exc}") from exc
     return [ScrapeRunOut.model_validate(row) for row in rows]
+
+
+@router.get("/request-logs", response_model=list[ScrapeRequestLogOut])
+async def get_request_logs(
+    limit: int = Query(default=100, ge=1, le=500),
+    source: str | None = Query(default=None),
+    run_id: uuid.UUID | None = Query(default=None),
+    outcome: str | None = Query(default=None),
+    status_code: int | None = Query(default=None),
+    errors_only: bool = Query(default=False),
+    db: AsyncSession = Depends(get_db),
+) -> list[ScrapeRequestLogOut]:
+    try:
+        rows = await query_request_logs(
+            db,
+            limit=limit,
+            source=source,
+            run_id=run_id,
+            outcome=outcome,
+            status_code=status_code,
+            errors_only=errors_only,
+        )
+    except Exception as exc:
+        logger.exception("Failed to query request logs")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {exc}") from exc
+    return [ScrapeRequestLogOut.model_validate(row) for row in rows]
+
+
+@router.get("/anomalies", response_model=list[ScrapeAnomalyOut])
+async def get_anomalies(
+    limit: int = Query(default=100, ge=1, le=500),
+    source: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    run_id: uuid.UUID | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> list[ScrapeAnomalyOut]:
+    try:
+        rows = await query_anomalies(
+            db,
+            limit=limit,
+            source=source,
+            severity=severity,
+            run_id=run_id,
+        )
+    except Exception as exc:
+        logger.exception("Failed to query anomalies")
+        raise HTTPException(status_code=500, detail=f"Database query failed: {exc}") from exc
+    return [ScrapeAnomalyOut.model_validate(row) for row in rows]
 
 
 @router.websocket("/ws/stream")

@@ -3,7 +3,7 @@
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction_image import AuctionImage
 from app.models.auction_lot import AuctionLot
+from app.models.crawl_state import CrawlState
+from app.models.scrape_anomaly import ScrapeAnomaly
+from app.models.scrape_request_log import ScrapeRequestLog
 from app.models.scrape_run import ScrapeRun
+from app.settings import settings
 
 if TYPE_CHECKING:
     from app.broadcast import ScrapeBroadcaster
@@ -73,6 +77,9 @@ class BaseScraper(ABC):
         self.broadcaster = broadcaster
         self.mode = mode
         self.records_updated = 0
+        self.current_run_id: uuid.UUID | None = None
+        self.anomaly_count = 0
+        self.request_log_count = 0
 
     async def _emit(
         self, event_type: str, message: str, data: dict | None = None
@@ -83,6 +90,101 @@ class BaseScraper(ABC):
 
         await self.broadcaster.publish(
             ScrapeEvent(type=event_type, source=self.source, message=message, data=data or {})
+        )
+
+    async def record_request_log(
+        self,
+        *,
+        url: str,
+        action: str,
+        attempt: int,
+        status_code: int | None = None,
+        duration_ms: int | None = None,
+        outcome: str,
+        error_type: str | None = None,
+        error_message: str | None = None,
+        retry_delay_seconds: float | None = None,
+        raw_item_count: int | None = None,
+        parsed_lot_count: int | None = None,
+        skip_counts: dict | None = None,
+        metadata_json: dict | None = None,
+    ) -> None:
+        self.request_log_count += 1
+        self.session.add(
+            ScrapeRequestLog(
+                scrape_run_id=self.current_run_id,
+                source=self.source,
+                url=url,
+                action=action,
+                attempt=attempt,
+                status_code=status_code,
+                duration_ms=duration_ms,
+                outcome=outcome,
+                error_type=error_type,
+                error_message=error_message,
+                retry_delay_seconds=retry_delay_seconds,
+                raw_item_count=raw_item_count,
+                parsed_lot_count=parsed_lot_count,
+                skip_counts=skip_counts or {},
+                metadata_json=metadata_json or {},
+            )
+        )
+
+    async def record_anomaly(
+        self,
+        *,
+        severity: str,
+        code: str,
+        message: str,
+        url: str | None = None,
+        metadata_json: dict | None = None,
+    ) -> None:
+        self.anomaly_count += 1
+        self.session.add(
+            ScrapeAnomaly(
+                scrape_run_id=self.current_run_id,
+                source=self.source,
+                severity=severity,
+                code=code,
+                message=message,
+                url=url,
+                metadata_json=metadata_json or {},
+            )
+        )
+        await self._emit(
+            "warning" if severity != "critical" else "error",
+            message,
+            {"severity": severity, "code": code, "url": url, **(metadata_json or {})},
+        )
+
+    async def update_crawl_state(self, state_update: dict) -> None:
+        result = await self.session.execute(
+            select(CrawlState).where(
+                (CrawlState.source == self.source) & (CrawlState.mode == self.mode)
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if isawaitable(existing):
+            existing = await existing
+        now = datetime.now(UTC)
+        if existing is None:
+            self.session.add(
+                CrawlState(
+                    source=self.source,
+                    mode=self.mode,
+                    state=state_update,
+                    last_run_at=now,
+                    updated_at=now,
+                )
+            )
+            return
+        existing.state = {**(existing.state or {}), **state_update}
+        existing.last_run_at = now
+
+    async def prune_old_request_logs(self) -> None:
+        cutoff = datetime.now(UTC) - timedelta(days=settings.request_log_retention_days)
+        await self.session.execute(
+            delete(ScrapeRequestLog).where(ScrapeRequestLog.created_at < cutoff)
         )
 
     def _lot_values(self, scraped: ScrapedAuctionLot) -> dict:
@@ -185,16 +287,27 @@ class BaseScraper(ABC):
         )
         self.session.add(scrape_run)
         await self.session.flush()
+        self.current_run_id = scrape_run.id
+        await self.prune_old_request_logs()
 
         records_found = 0
         records_inserted = 0
         error: str | None = None
         self.records_updated = 0
+        self.anomaly_count = 0
+        self.request_log_count = 0
 
         await self._emit("start", f"Starting scraper: {self.source}")
         try:
             lots = await self.scrape()
             records_found = len(lots)
+            if records_found == 0:
+                await self.record_anomaly(
+                    severity="warning",
+                    code="zero_lots",
+                    message=f"{self.source} returned zero auction lots.",
+                    metadata_json={"mode": self.mode},
+                )
             await self._emit(
                 "progress",
                 f"Fetched {records_found} auction lots — saving to DB…",
@@ -214,7 +327,27 @@ class BaseScraper(ABC):
                             "updated": self.records_updated,
                         },
                     )
+            ended_dates = [lot.ended_at for lot in lots if lot.ended_at is not None]
+            await self.update_crawl_state(
+                {
+                    "last_success_at": datetime.now(UTC).isoformat(),
+                    "records_found": records_found,
+                    "records_inserted": records_inserted,
+                    "records_updated": self.records_updated,
+                    "request_count": self.request_log_count,
+                    "anomaly_count": self.anomaly_count,
+                    "auction_ids_discovered": [
+                        lot.source_auction_id for lot in lots if lot.source_auction_id
+                    ][:5000],
+                    "oldest_ended_at": min(ended_dates).isoformat() if ended_dates else None,
+                    "newest_ended_at": max(ended_dates).isoformat() if ended_dates else None,
+                }
+            )
             scrape_run.status = "success"
+            scrape_run.metadata_json = {
+                **(scrape_run.metadata_json or {}),
+                "anomaly_count": self.anomaly_count,
+            }
             await self.session.commit()
         except Exception as exc:
             await self.session.rollback()
@@ -228,8 +361,13 @@ class BaseScraper(ABC):
             scrape_run.records_inserted = records_inserted
             scrape_run.records_updated = self.records_updated
             scrape_run.error = error
+            scrape_run.metadata_json = {
+                **(scrape_run.metadata_json or {}),
+                "anomaly_count": self.anomaly_count,
+            }
             await self.session.merge(scrape_run)
             await self.session.commit()
+            self.current_run_id = None
 
         await self._emit(
             "complete",

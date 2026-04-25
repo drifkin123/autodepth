@@ -10,6 +10,8 @@ import pytest
 
 from app.models.auction_image import AuctionImage
 from app.models.auction_lot import AuctionLot
+from app.models.scrape_anomaly import ScrapeAnomaly
+from app.models.scrape_request_log import ScrapeRequestLog
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 
 
@@ -139,3 +141,44 @@ async def test_duplicate_detection_falls_back_to_canonical_url_when_id_missing()
 
     assert inserted is False
     assert existing.title == "2020 Porsche 911 GT3"
+
+
+@pytest.mark.asyncio
+async def test_base_scraper_records_request_logs_and_anomalies() -> None:
+    session = _make_session()
+    scraper = ConcreteTestScraper(session)
+    scraper.current_run_id = uuid.uuid4()
+
+    await scraper.record_request_log(
+        url="https://example.com/page",
+        action="http_get",
+        attempt=2,
+        status_code=500,
+        duration_ms=75,
+        outcome="retry",
+        error_type="HTTPStatusError",
+        error_message="server error",
+        retry_delay_seconds=2.0,
+        raw_item_count=10,
+        parsed_lot_count=0,
+        skip_counts={"no_price": 10},
+        metadata_json={"target": "Example"},
+    )
+    await scraper.record_anomaly(
+        severity="warning",
+        code="zero_lots",
+        message="No lots parsed",
+        url="https://example.com/page",
+        metadata_json={"raw_item_count": 10},
+    )
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert len(logs) == 1
+    assert logs[0].scrape_run_id == scraper.current_run_id
+    assert logs[0].outcome == "retry"
+    assert logs[0].skip_counts == {"no_price": 10}
+    assert len(anomalies) == 1
+    assert anomalies[0].severity == "warning"
+    assert anomalies[0].code == "zero_lots"
