@@ -27,32 +27,8 @@
       min-height: 100vh;
     }
 
-    /* ── Auth gate ── */
-    #auth-gate {
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh;
-    }
-    .auth-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 40px;
-      width: 340px;
-      text-align: center;
-    }
-    .auth-card h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
-    .auth-card .sub { color: var(--muted); margin-bottom: 24px; font-size: 12px; }
-    .auth-card input {
-      width: 100%; padding: 10px 14px;
-      background: var(--bg); border: 1px solid var(--border);
-      border-radius: 6px; color: var(--text); font-size: 13px;
-      margin-bottom: 12px; outline: none;
-    }
-    .auth-card input:focus { border-color: var(--accent); }
-    .auth-card .err { color: var(--red); font-size: 12px; margin-bottom: 10px; min-height: 16px; }
-
     /* ── Dashboard ── */
-    #dashboard { display: none; }
+    #dashboard { display: block; }
     header {
       border-bottom: 1px solid var(--border);
       padding: 14px 24px;
@@ -241,18 +217,6 @@
 </head>
 <body>
 
-<!-- Auth gate -->
-<div id="auth-gate">
-  <div class="auth-card">
-    <h1>AutoDepth</h1>
-    <p class="sub">Admin Dashboard</p>
-    <input id="secret-input" type="password" placeholder="Admin secret" autofocus
-           onkeydown="if(event.key==='Enter') doLogin()">
-    <div class="err" id="auth-err"></div>
-    <button class="btn-primary" style="width:100%" onclick="doLogin()">Sign in</button>
-  </div>
-</div>
-
 <!-- Dashboard -->
 <div id="dashboard">
   <header>
@@ -312,21 +276,6 @@
               <span class="count" id="bat-car-count">0 / 0</span>
             </div>
             <div class="car-selector" id="bat-car-selector">
-              <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-header">
-              <h2>Cars.com</h2>
-              <span class="hint">Search pages</span>
-            </div>
-            <div class="car-selector-controls">
-              <button class="btn-secondary" onclick="toggleAll('cc', true)">All</button>
-              <button class="btn-secondary" onclick="toggleAll('cc', false)">None</button>
-              <span class="count" id="cc-car-count">0 / 0</span>
-            </div>
-            <div class="car-selector" id="cc-car-selector">
               <div style="padding:16px;color:var(--muted);font-style:italic">Loading…</div>
             </div>
           </div>
@@ -394,8 +343,6 @@
               <option value="">All sources</option>
               <option value="bring_a_trailer">Bring a Trailer</option>
               <option value="cars_and_bids">Cars &amp; Bids</option>
-              <option value="rm_sotheby">RM Sotheby's</option>
-              <option value="cars_com">Cars.com</option>
             </select>
           </div>
           <div class="filter-group">
@@ -453,11 +400,9 @@
 </div>
 
 <script>
-  let TOKEN = '';
   let ws = null;
   let logEmpty = true;
   let batUrls = [];
-  let carsComUrls = [];
   let cabUrls = [];
   let listingsCurrentPage = 1;
   let listingsTotal = 0;
@@ -475,27 +420,9 @@
     if (name === 'listings' && listingsTotal === 0) loadListings(1);
   }
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-  async function doLogin() {
-    const val = document.getElementById('secret-input').value.trim();
-    const errEl = document.getElementById('auth-err');
-    errEl.textContent = '';
-    try {
-      const res = await fetch(`/api/admin/status?token=${encodeURIComponent(val)}`);
-      if (res.status === 401) { errEl.textContent = 'Invalid secret.'; return; }
-      if (!res.ok) { errEl.textContent = 'Server error. Is the backend running?'; return; }
-      TOKEN = val;
-      document.getElementById('auth-gate').style.display = 'none';
-      document.getElementById('dashboard').style.display = 'block';
-      initDashboard();
-    } catch (e) {
-      errEl.textContent = 'Could not reach server.';
-    }
-  }
-
   // ── Init ──────────────────────────────────────────────────────────────────
   async function initDashboard() {
-    await Promise.all([loadLogs(), loadBatUrls(), loadCarsComUrls(), loadCarsAndBidsUrls()]);
+    await Promise.all([loadLogs(), loadBatUrls(), loadCarsAndBidsUrls()]);
     connectWebSocket();
     setInterval(pollStatus, 3000);
     pollStatus();
@@ -503,7 +430,7 @@
 
   async function pollStatus() {
     try {
-      const res = await fetch(`/api/admin/status?token=${encodeURIComponent(TOKEN)}`);
+      const res = await fetch('/api/admin/status');
       if (!res.ok) return;
       const data = await res.json();
       setRunningState(data.is_running);
@@ -533,25 +460,16 @@
   // ── Car selectors ────────────────────────────────────────────────────────
   async function loadBatUrls() {
     try {
-      const res = await fetch(`/api/admin/scrapers/bat/urls?token=${encodeURIComponent(TOKEN)}`);
+      const res = await fetch('/api/admin/scrapers/bat/urls');
       if (!res.ok) return;
       batUrls = await res.json();
       renderSelector('bat', batUrls);
     } catch (_) {}
   }
 
-  async function loadCarsComUrls() {
-    try {
-      const res = await fetch(`/api/admin/scrapers/cars_com/urls?token=${encodeURIComponent(TOKEN)}`);
-      if (!res.ok) return;
-      carsComUrls = await res.json();
-      renderSelector('cc', carsComUrls);
-    } catch (_) {}
-  }
-
   async function loadCarsAndBidsUrls() {
     try {
-      const res = await fetch(`/api/admin/scrapers/cars_and_bids/urls?token=${encodeURIComponent(TOKEN)}`);
+      const res = await fetch('/api/admin/scrapers/cars_and_bids/urls');
       if (!res.ok) return;
       cabUrls = await res.json();
       renderSelector('cab', cabUrls);
@@ -605,7 +523,7 @@
   // ── WebSocket ──────────────────────────────────────────────────────────────
   function connectWebSocket() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/api/admin/ws/stream?token=${encodeURIComponent(TOKEN)}`;
+    const url = `${proto}://${location.host}/api/admin/ws/stream`;
     ws = new WebSocket(url);
 
     ws.onopen = () => setWsStatus(true);
@@ -696,7 +614,7 @@
   // ── Logs table ──────────────────────────────────────────────────────────────
   async function loadLogs() {
     try {
-      const res = await fetch(`/api/admin/logs?limit=50&token=${encodeURIComponent(TOKEN)}`);
+      const res = await fetch('/api/admin/logs?limit=50');
       if (!res.ok) return;
       const logs = await res.json();
       renderLogs(logs);
@@ -750,9 +668,8 @@
   // ── Actions ──────────────────────────────────────────────────────────────────
   async function triggerScrape() {
     const batKeys = getSelectedKeys('bat');
-    const ccKeys = getSelectedKeys('cc');
     const cabKeys = getSelectedKeys('cab');
-    if (batKeys.length === 0 && ccKeys.length === 0 && cabKeys.length === 0) {
+    if (batKeys.length === 0 && cabKeys.length === 0) {
       alert('Select at least one car page to scrape.');
       return;
     }
@@ -761,12 +678,10 @@
     const body = {};
     if (batKeys.length === 0) body.bat_selected_keys = [];
     else if (batKeys.length < batUrls.length) body.bat_selected_keys = batKeys;
-    if (ccKeys.length === 0) body.cars_com_selected_keys = [];
-    else if (ccKeys.length < carsComUrls.length) body.cars_com_selected_keys = ccKeys;
     if (cabKeys.length === 0) body.carsandbids_selected_keys = [];
     else if (cabKeys.length < cabUrls.length) body.carsandbids_selected_keys = cabKeys;
     try {
-      const res = await fetch(`/api/admin/scrape/trigger?token=${encodeURIComponent(TOKEN)}`, {
+      const res = await fetch('/api/admin/scrape/trigger', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -780,7 +695,7 @@
 
   async function stopScrape() {
     try {
-      const res = await fetch(`/api/admin/scrape/stop?token=${encodeURIComponent(TOKEN)}`, { method: 'POST' });
+      const res = await fetch('/api/admin/scrape/stop', { method: 'POST' });
       if (res.status === 409) { alert('No scrape is currently running.'); return; }
       if (!res.ok) { alert('Failed to stop scrape.'); return; }
       document.getElementById('btn-stop').disabled = true;
@@ -789,7 +704,7 @@
 
   async function triggerDepreciation() {
     try {
-      const res = await fetch(`/api/admin/depreciation/trigger?token=${encodeURIComponent(TOKEN)}`, { method: 'POST' });
+      const res = await fetch('/api/admin/depreciation/trigger', { method: 'POST' });
       if (!res.ok) { alert('Failed to start depreciation run.'); return; }
       setRunningState(true);
     } catch (e) { alert('Error: ' + e.message); }
@@ -803,11 +718,7 @@
     const dateTo = document.getElementById('filter-date-to').value;
     const sold = document.getElementById('filter-sold').value;
 
-    const params = new URLSearchParams({
-      token: TOKEN,
-      page,
-      page_size: LISTINGS_PAGE_SIZE,
-    });
+    const params = new URLSearchParams({ page, page_size: LISTINGS_PAGE_SIZE });
     if (source) params.set('source', source);
     if (dateFrom) params.set('date_from', dateFrom);
     if (dateTo) params.set('date_to', dateTo);
@@ -885,6 +796,8 @@
     document.getElementById('filter-sold').value = '';
     loadListings(1);
   }
+
+  window.addEventListener('DOMContentLoaded', initDashboard);
 </script>
 </body>
 </html>"""

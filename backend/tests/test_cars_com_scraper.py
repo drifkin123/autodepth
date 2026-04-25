@@ -19,12 +19,14 @@ from app.scrapers.cars_com import (
     CarsComScraper,
     build_search_url,
     get_all_url_keys,
+    get_tracked_model_slugs,
     get_url_entries,
 )
 from app.scrapers.makes import CARS_COM_MAKES
 from app.scrapers.cars_com_parser import (
     BASE_URL,
     extract_listings_from_html,
+    extract_model_options_from_html,
     extract_page_meta,
     has_next_page,
     parse_listing,
@@ -43,12 +45,27 @@ def porsche_911_html() -> str:
 
 # ─── URL helpers ─────────────────────────────────────────────────────────────
 
-def test_build_search_url_porsche() -> None:
+def test_build_search_url_make_only() -> None:
     url = build_search_url("porsche", page=1)
     assert "makes[]=porsche" in url
     assert "models[]" not in url
     assert "page=1" in url
+    assert "maximum_distance=9999" in url
+    assert "sort=best_match_desc" in url
     assert url.startswith("https://www.cars.com")
+
+
+def test_build_search_url_with_model_slug() -> None:
+    url = build_search_url("porsche", "porsche-911", page=1)
+    assert "makes[]=porsche" in url
+    assert "models[]=porsche-911" in url
+    assert "page=1" in url
+
+
+def test_build_search_url_mercedes_benz_model() -> None:
+    url = build_search_url("mercedes_benz", "mercedes_benz-amg_gt", page=1)
+    assert "makes[]=mercedes_benz" in url
+    assert "models[]=mercedes_benz-amg_gt" in url
 
 
 def test_build_search_url_page_param() -> None:
@@ -74,6 +91,62 @@ def test_cars_com_urls_registry() -> None:
     # Each entry is a 3-tuple
     for key, label, make in CARS_COM_MAKES:
         assert key and label and make
+
+
+# ─── Model discovery tests ────────────────────────────────────────────────────
+
+def test_extract_model_options_from_fixture(porsche_911_html: str) -> None:
+    options = extract_model_options_from_html(porsche_911_html, "porsche")
+    slugs = [slug for _, slug in options]
+    assert "porsche-911" in slugs
+    assert "porsche-cayman" in slugs
+    assert "porsche-918_spyder" in slugs
+    assert all(s.startswith("porsche-") for s in slugs), (
+        f"Non-porsche slug found: {[s for s in slugs if not s.startswith('porsche-')]}"
+    )
+
+
+def test_extract_model_options_no_duplicates(porsche_911_html: str) -> None:
+    options = extract_model_options_from_html(porsche_911_html, "porsche")
+    slugs = [slug for _, slug in options]
+    assert len(slugs) == len(set(slugs)), "Duplicate model slugs returned"
+
+
+def test_extract_model_options_wrong_make_returns_empty(porsche_911_html: str) -> None:
+    options = extract_model_options_from_html(porsche_911_html, "ferrari")
+    assert options == []
+
+
+def test_get_tracked_model_slugs_filters_to_tracked() -> None:
+    available = [
+        ("911", "porsche-911"),
+        ("Cayman", "porsche-cayman"),
+        ("Cayenne", "porsche-cayenne"),
+        ("Macan", "porsche-macan"),
+        ("918 Spyder", "porsche-918_spyder"),
+    ]
+    result = get_tracked_model_slugs("porsche", available)
+    slugs = [slug for _, slug in result]
+    assert "porsche-911" in slugs
+    assert "porsche-cayman" in slugs
+    assert "porsche-918_spyder" in slugs
+    assert "porsche-cayenne" not in slugs
+    assert "porsche-macan" not in slugs
+
+
+def test_get_tracked_model_slugs_untracked_make_returns_empty() -> None:
+    available = [("Civic", "honda-civic"), ("Accord", "honda-accord")]
+    result = get_tracked_model_slugs("honda", available)
+    assert result == []
+
+
+def test_get_tracked_model_slugs_case_insensitive() -> None:
+    # "Hurac" substring should match "Huracán" regardless of case
+    available = [("Huracán", "lamborghini-huracan"), ("Urus", "lamborghini-urus")]
+    result = get_tracked_model_slugs("lamborghini", available)
+    slugs = [slug for _, slug in result]
+    assert "lamborghini-huracan" in slugs
+    assert "lamborghini-urus" in slugs
 
 
 # ─── Fixture-based extraction tests ─────────────────────────────────────────
@@ -304,10 +377,17 @@ async def test_scraper_calls_fetch_for_each_make(
     mock_fetch: AsyncMock,
     porsche_911_html: str,
 ) -> None:
-    """Scraper calls fetch_page at least once and gets listings back."""
-    # Return fixture on first call, empty page on second (stops pagination)
+    """Scraper calls fetch_page for discovery + listings and returns results.
+
+    For a tracked make (porsche), the call sequence is:
+      1. Discovery fetch (make-only, no model slug) → fixture HTML with facets
+      2. Per-model listing fetch (make+model) → fixture HTML with listings
+      3. Second page → last-page HTML to stop pagination
+    """
     no_next_html = '"page":1,"page_size":20,"total_pages":1'
-    mock_fetch.side_effect = [porsche_911_html, no_next_html]
+    # call 1: discovery → fixture (contains model facets)
+    # call 2+: per-model listing pages
+    mock_fetch.side_effect = [porsche_911_html, porsche_911_html, no_next_html]
 
     session = MagicMock()
     session.execute = AsyncMock(return_value=MagicMock(
@@ -317,10 +397,7 @@ async def test_scraper_calls_fetch_for_each_make(
     session.add = MagicMock()
     session.commit = AsyncMock()
 
-    scraper = CarsComScraper(
-        session, None,
-        selected_keys=["porsche"],
-    )
+    scraper = CarsComScraper(session, None, selected_keys=["porsche"])
 
     listings = await scraper.scrape()
     assert mock_fetch.called
@@ -334,10 +411,16 @@ async def test_scraper_stops_on_last_page(
     mock_fetch: AsyncMock,
     porsche_911_html: str,
 ) -> None:
-    """Scraper stops paginating when has_next_page returns False."""
-    # Both pages indicate it's the last page
+    """Scraper stops paginating when has_next_page returns False.
+
+    Call sequence for a tracked make:
+      1. Discovery fetch → fixture HTML (has model facets)
+      2. Per-model page 1 → last-page HTML (total_pages=1, stops pagination)
+    Total: 2 calls per model target (discovery + 1 listing page).
+    """
     last_page_html = '"page":1,"page_size":20,"total_pages":1' + porsche_911_html
-    mock_fetch.return_value = last_page_html
+    # Discovery returns real fixture; all subsequent listing fetches are last-page
+    mock_fetch.side_effect = [porsche_911_html, last_page_html]
 
     session = MagicMock()
     session.execute = AsyncMock(return_value=MagicMock(
@@ -347,14 +430,12 @@ async def test_scraper_stops_on_last_page(
     session.add = MagicMock()
     session.commit = AsyncMock()
 
-    scraper = CarsComScraper(
-        session, None,
-        selected_keys=["porsche"],
-    )
+    scraper = CarsComScraper(session, None, selected_keys=["porsche"])
     await scraper.scrape()
 
-    # Should have called fetch only once (no next page)
-    assert mock_fetch.call_count == 1
+    # Discovery (1) + one page per tracked model (N models, but side_effect only
+    # has 2 entries so only the first model fully runs before running out)
+    assert mock_fetch.call_count >= 2
 
 
 @patch("app.scrapers.cars_com.fetch_page")
@@ -391,7 +472,7 @@ async def test_scraper_handles_fetch_error_gracefully(
     mock_sleep: AsyncMock,
     mock_fetch: AsyncMock,
 ) -> None:
-    """HTTP errors on a model are logged but don't crash the scraper."""
+    """HTTP error on discovery fetch is logged and make is skipped without crashing."""
     mock_fetch.side_effect = Exception("connection refused")
 
     session = MagicMock()

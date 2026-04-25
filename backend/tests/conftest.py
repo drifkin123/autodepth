@@ -20,7 +20,10 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import Base
+from app.models.auction_image import AuctionImage  # noqa: F401
 from app.models.car import Car  # noqa: F401 — registers with Base.metadata
+from app.models.crawl_state import CrawlState  # noqa: F401
+from app.models.listing_snapshot import ListingSnapshot  # noqa: F401
 from app.models.price_prediction import PricePrediction  # noqa: F401
 from app.models.scrape_log import ScrapeLog  # noqa: F401
 from app.models.vehicle_sale import VehicleSale  # noqa: F401
@@ -94,7 +97,10 @@ async def integration_session() -> AsyncSession:  # type: ignore[misc]
 
         # Teardown: wipe all data (not schema)
         await session.execute(
-            text("TRUNCATE TABLE vehicle_sales, cars, scrape_logs RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE TABLE auction_images, vehicle_sales, cars, scrape_logs "
+                "RESTART IDENTITY CASCADE"
+            )
         )
         await session.commit()
 

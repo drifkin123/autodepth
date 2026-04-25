@@ -43,7 +43,7 @@ async def query_paginated_sales(
 
     data_q = (
         select(VehicleSale, Car)
-        .join(Car, VehicleSale.car_id == Car.id)
+        .outerjoin(Car, VehicleSale.car_id == Car.id)
         .order_by(desc(VehicleSale.listed_at))
         .offset((page - 1) * page_size)
         .limit(page_size)

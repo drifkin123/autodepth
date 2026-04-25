@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 from sqlalchemy import Float, case, extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,15 +46,23 @@ class CarOut(APIModel):
 
 class VehicleSaleOut(APIModel):
     id: uuid.UUID
-    car_id: uuid.UUID
+    car_id: uuid.UUID | None
     source: str
     source_url: str
     sale_type: str
+    source_auction_id: str | None = None
+    auction_status: str | None = None
     year: int
     mileage: int | None
     color: str | None
     asking_price: int
     sold_price: int | None
+    high_bid: int | None = None
+    bid_count: int | None = None
+    title: str | None = None
+    subtitle: str | None = None
+    image_count: int = 0
+    vehicle_details: dict = Field(default_factory=dict)
     is_sold: bool
     listed_at: datetime
     sold_at: datetime | None
@@ -140,7 +148,11 @@ async def get_car_sales(
         count_result = await db.execute(select(func.count()).select_from(stmt.subquery()))
         total = count_result.scalar_one()
 
-        stmt = stmt.order_by(VehicleSale.listed_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        stmt = (
+            stmt.order_by(VehicleSale.listed_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
         sales = (await db.execute(stmt)).scalars().all()
     except Exception as exc:
         logger.exception("Failed to query car sales")

@@ -27,12 +27,16 @@ export type SaleSource =
 
 export type SaleType = 'auction' | 'listing' | 'dealer' | 'private'
 
+export type AuctionStatus = 'sold' | 'reserve_not_met' | 'withdrawn' | 'unknown'
+
 export interface VehicleSale {
   id: string
   carId: string
   source: SaleSource
   sourceUrl: string
   saleType: SaleType
+  sourceAuctionId: string | null
+  auctionStatus: AuctionStatus | null
   year: number                  // model year of the specific unit
   mileage: number | null
   color: string | null
@@ -40,11 +44,30 @@ export interface VehicleSale {
   soldPrice: number | null      // confirmed final sale price; NULL for listings
                                 // NOTE: asking vs sold diverge significantly —
                                 // soldPrice is authoritative for market value
+  highBid: number | null
+  bidCount: number | null
+  title: string | null
+  subtitle: string | null
+  imageCount: number
+  vehicleDetails: Record<string, unknown>
   isSold: boolean
   listedAt: string              // ISO timestamp
   soldAt: string | null         // ISO timestamp; null if not a confirmed sale
   conditionNotes: string | null
   options: Record<string, unknown>
+}
+
+export interface AuctionImage {
+  id: string
+  vehicleSaleId: string
+  source: SaleSource
+  sourceUrl: string
+  imageUrl: string
+  position: number
+  caption: string | null
+  width: number | null
+  height: number | null
+  createdAt: string
 }
 
 // ─── Price history ─────────────────────────────────────────────────────────────

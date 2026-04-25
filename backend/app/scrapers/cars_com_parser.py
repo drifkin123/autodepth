@@ -42,6 +42,31 @@ _PAGE_META_PATTERN = re.compile(
     r'"page":(?P<page>\d+),"page_size":(?P<page_size>\d+),"total_pages":(?P<total_pages>\d+)'
 )
 
+# Facet option objects embedded in the page: {"name":"911","value":"porsche-911",...}
+_FACET_OPTION_PATTERN = re.compile(
+    r'"name":"(?P<name>[^"]+)","value":"(?P<value>[^"]+)"'
+)
+
+
+def extract_model_options_from_html(html: str, make_slug: str) -> list[tuple[str, str]]:
+    """Extract (name, slug) model option pairs from a make-filtered results page.
+
+    Scans embedded facet JSON for name/value pairs where the value starts with
+    ``{make_slug}-``.  Deduplicates by slug (keeps first occurrence).
+
+    Example output for make_slug="porsche":
+        [("911", "porsche-911"), ("Cayman", "porsche-cayman"), ...]
+    """
+    prefix = f"{make_slug}-"
+    seen: set[str] = set()
+    results: list[tuple[str, str]] = []
+    for m in _FACET_OPTION_PATTERN.finditer(html):
+        value = m.group("value")
+        if value.startswith(prefix) and value not in seen:
+            seen.add(value)
+            results.append((m.group("name"), value))
+    return results
+
 
 def extract_listings_from_html(html: str) -> list[dict]:
     """Extract raw listing dicts from a Cars.com search results page.

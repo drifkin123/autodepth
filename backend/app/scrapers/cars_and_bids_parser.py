@@ -20,7 +20,7 @@ skipped so that no unconfirmed hammer prices pollute the depreciation model.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.scrapers.base import ScrapedListing
 from app.scrapers.bat_parser import parse_color
@@ -63,7 +63,7 @@ def parse_sold_date(auction_end: str | None) -> datetime | None:
     try:
         # Python 3.11+ handles timezone offsets natively; strip trailing fractions if needed
         dt = datetime.fromisoformat(auction_end.replace("Z", "+00:00"))
-        return dt.astimezone(timezone.utc)
+        return dt.astimezone(UTC)
     except (ValueError, TypeError):
         return None
 
@@ -71,6 +71,53 @@ def parse_sold_date(auction_end: str | None) -> datetime | None:
 def build_source_url(auction_id: str) -> str:
     """Build the canonical listing URL from a C&B auction ID."""
     return f"{BASE_URL}/auctions/{auction_id}/"
+
+
+def normalize_auction_status(status: str | None) -> str:
+    if status == "sold":
+        return "sold"
+    if status in {"reserve_not_met", "no_sale", "unsold"}:
+        return "reserve_not_met"
+    if status == "withdrawn":
+        return "withdrawn"
+    return "unknown"
+
+
+def parse_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_image_urls(item: dict) -> list[str]:
+    urls: list[str] = []
+    for key in ("main_photo", "photo", "image", "image_url", "thumbnail_url"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            urls.append(value)
+        elif isinstance(value, dict):
+            for nested_key in ("url", "src"):
+                nested = value.get(nested_key)
+                if isinstance(nested, str) and nested:
+                    urls.append(nested)
+                    break
+    for key in ("photos", "images"):
+        values = item.get(key)
+        if not isinstance(values, list):
+            continue
+        for image in values:
+            if isinstance(image, str) and image:
+                urls.append(image)
+            elif isinstance(image, dict):
+                for nested_key in ("url", "src", "large_url", "thumbnail_url"):
+                    nested = image.get(nested_key)
+                    if isinstance(nested, str) and nested:
+                        urls.append(nested)
+                        break
+    return list(dict.fromkeys(urls))
 
 
 def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
@@ -87,21 +134,23 @@ def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
     if not title:
         return None, "no_title"
 
-    if item.get("status") != "sold":
-        return None, "not_sold"
-
     year = parse_year(title)
     if year is None:
         return None, "no_year"
 
-    sale_amount = item.get("sale_amount")
-    if not sale_amount or int(sale_amount) <= 0:
+    auction_status = normalize_auction_status(item.get("status"))
+    sale_amount = parse_int(item.get("sale_amount"))
+    current_bid = parse_int(item.get("current_bid"))
+    if auction_status == "sold" and (sale_amount is None or sale_amount <= 0):
         return None, "no_price"
-    price = int(sale_amount)
+    high_bid = current_bid or sale_amount
+    if high_bid is None or high_bid <= 0:
+        return None, "no_price"
+    sold_price = sale_amount if auction_status == "sold" else None
 
     mileage = parse_mileage(item.get("mileage"))
     sold_at = parse_sold_date(item.get("auction_end"))
-    listed_at = sold_at or datetime.now(timezone.utc)
+    listed_at = sold_at or datetime.now(UTC)
     source_url = build_source_url(auction_id)
 
     sub_title = item.get("sub_title") or ""
@@ -111,28 +160,44 @@ def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
         sale_type="auction",
         raw_title=title,
         year=year,
-        asking_price=price,
-        sold_price=price,
-        is_sold=True,
+        asking_price=high_bid,
+        sold_price=sold_price,
+        is_sold=auction_status == "sold",
         listed_at=listed_at,
-        sold_at=sold_at,
+        sold_at=sold_at if auction_status == "sold" else None,
         mileage=mileage,
         color=parse_color(sub_title),
         transmission=item.get("transmission"),
         location=item.get("location"),
         no_reserve=bool(item.get("no_reserve", False)),
         condition_notes=sub_title or None,
+        source_auction_id=auction_id,
+        auction_status=auction_status,
+        high_bid=high_bid,
+        bid_count=parse_int(
+            item.get("bid_count") or item.get("bids_count") or item.get("num_bids")
+        ),
+        title=title,
+        subtitle=sub_title or None,
+        image_urls=extract_image_urls(item),
+        vehicle_details={
+            key: item[key]
+            for key in ("engine", "drivetrain", "transmission", "location")
+            if item.get(key) is not None
+        },
         raw_data={
             "id": auction_id,
             "title": title,
             "sub_title": sub_title or None,
             "status": item.get("status"),
-            "sale_amount": price,
-            "current_bid": item.get("current_bid"),
+            "auction_status": auction_status,
+            "sale_amount": sale_amount,
+            "current_bid": current_bid,
             "mileage": item.get("mileage"),
             "transmission": item.get("transmission"),
             "location": item.get("location"),
             "no_reserve": item.get("no_reserve"),
+            "bid_count": item.get("bid_count") or item.get("bids_count") or item.get("num_bids"),
         },
     )
     return listing, ""

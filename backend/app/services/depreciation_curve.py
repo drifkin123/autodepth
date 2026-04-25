@@ -7,14 +7,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import UTC, date, timedelta
 
 import numpy as np
 
 from app.models.price_prediction import PricePrediction
 
 # Auction sources — only these contribute to curve fitting
-AUCTION_SOURCES = {"bring_a_trailer", "cars_and_bids", "rm_sotheby"}
+AUCTION_SOURCES = {"bring_a_trailer", "cars_and_bids"}
 
 # Minimum confirmed sales needed to attempt curve fitting
 MIN_SALES_FOR_FIT = 5
@@ -53,11 +53,13 @@ def exp_decay(t: np.ndarray, p0: float, lam: float, c: float) -> np.ndarray:
     return p0 * np.exp(-lam * t) + c
 
 
-def estimate_floor(car: "Car") -> float:  # noqa: F821
+def estimate_floor(car: Car) -> float:  # noqa: F821
     """Compute the expected price floor as a fraction of original MSRP."""
     fraction = BASE_FLOOR_FRACTION
     for threshold, premium in SCARCITY_TIERS:
-        if threshold is None or (car.production_count is not None and car.production_count <= threshold):
+        if threshold is None or (
+            car.production_count is not None and car.production_count <= threshold
+        ):
             fraction += premium
             break
     if car.is_naturally_aspirated:
@@ -155,10 +157,10 @@ def build_predictions(
     current_t: float,
 ) -> list[PricePrediction]:
     """Build monthly PricePrediction rows for 36 months forward."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     predictions: list[PricePrediction] = []
-    now_utc = datetime.now(timezone.utc)
+    now_utc = datetime.now(UTC)
 
     for months_ahead in range(PROJECTION_MONTHS + 1):
         t = current_t + months_ahead
