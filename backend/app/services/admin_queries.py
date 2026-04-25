@@ -1,71 +1,79 @@
-"""Admin-specific query helpers for the admin dashboard API."""
+"""Admin query helpers for the auction ingestion service."""
+
 from __future__ import annotations
 
-import logging
 from datetime import date
 
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.models.car import Car
-from app.models.scrape_log import ScrapeLog
-from app.models.vehicle_sale import VehicleSale
-
-logger = logging.getLogger(__name__)
+from app.models.auction_lot import AuctionLot
+from app.models.scrape_run import ScrapeRun
 
 
-async def query_paginated_sales(
+async def query_paginated_lots(
     db: AsyncSession,
     *,
     source: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    auction_status: str | None = None,
+    make: str | None = None,
+    model: str | None = None,
+    year: int | None = None,
+    ended_from: str | None = None,
+    ended_to: str | None = None,
     is_sold: bool | None = None,
     page: int = 1,
     page_size: int = 50,
-) -> tuple[list[tuple], int]:
-    """Return (rows_of_(VehicleSale, Car), total_count) with optional filters."""
+) -> tuple[list[AuctionLot], int]:
     filters = []
     if source:
-        filters.append(VehicleSale.source == source)
-    if date_from:
-        filters.append(func.date(VehicleSale.listed_at) >= date.fromisoformat(date_from))
-    if date_to:
-        filters.append(func.date(VehicleSale.listed_at) <= date.fromisoformat(date_to))
-    if is_sold is not None:
-        filters.append(VehicleSale.is_sold == is_sold)
+        filters.append(AuctionLot.source == source)
+    if auction_status:
+        filters.append(AuctionLot.auction_status == auction_status)
+    if make:
+        filters.append(AuctionLot.make.ilike(f"%{make}%"))
+    if model:
+        filters.append(AuctionLot.model.ilike(f"%{model}%"))
+    if year is not None:
+        filters.append(AuctionLot.year == year)
+    if ended_from:
+        filters.append(func.date(AuctionLot.ended_at) >= date.fromisoformat(ended_from))
+    if ended_to:
+        filters.append(func.date(AuctionLot.ended_at) <= date.fromisoformat(ended_to))
+    if is_sold is True:
+        filters.append(AuctionLot.auction_status == "sold")
+    elif is_sold is False:
+        filters.append(AuctionLot.auction_status != "sold")
 
-    count_q = select(func.count()).select_from(VehicleSale)
+    count_query = select(func.count()).select_from(AuctionLot)
     if filters:
-        count_q = count_q.where(*filters)
-    total_result = await db.execute(count_q)
-    total = total_result.scalar_one()
+        count_query = count_query.where(*filters)
+    total = (await db.execute(count_query)).scalar_one()
 
-    data_q = (
-        select(VehicleSale, Car)
-        .outerjoin(Car, VehicleSale.car_id == Car.id)
-        .order_by(desc(VehicleSale.listed_at))
+    data_query = (
+        select(AuctionLot)
+        .options(selectinload(AuctionLot.images))
+        .order_by(desc(AuctionLot.ended_at), desc(AuctionLot.created_at))
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
     if filters:
-        data_q = data_q.where(*filters)
-    result = await db.execute(data_q)
-    return result.all(), total
+        data_query = data_query.where(*filters)
+    rows = (await db.execute(data_query)).scalars().all()
+    return list(rows), total
 
 
-async def query_scrape_logs(
+async def query_scrape_runs(
     db: AsyncSession,
     *,
     limit: int = 50,
     source: str | None = None,
     errors_only: bool = False,
-) -> list[ScrapeLog]:
-    """Return recent scrape log entries with optional filters."""
-    q = select(ScrapeLog).order_by(desc(ScrapeLog.started_at)).limit(limit)
+) -> list[ScrapeRun]:
+    query = select(ScrapeRun).order_by(desc(ScrapeRun.started_at)).limit(limit)
     if source:
-        q = q.where(ScrapeLog.source == source)
+        query = query.where(ScrapeRun.source == source)
     if errors_only:
-        q = q.where(ScrapeLog.error.isnot(None))
-    result = await db.execute(q)
-    return list(result.scalars().all())
+        query = query.where(ScrapeRun.error.isnot(None))
+    return list((await db.execute(query)).scalars().all())

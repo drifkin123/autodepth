@@ -14,15 +14,15 @@ Each auction in the response is a dict with these fields used for parsing:
     mileage      str|None  e.g. "6,700 Miles"
     auction_end  str   ISO 8601 datetime string
 
-Only confirmed sales (status == "sold") are ingested; reserve-not-met auctions are
-skipped so that no unconfirmed hammer prices pollute the depreciation model.
+Sold and reserve-not-met auctions are preserved. Only confirmed sales populate
+``sold_price``; unsold lots keep ``sold_price`` null and store the high bid.
 """
 from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
 
-from app.scrapers.base import ScrapedListing
+from app.scrapers.base import ScrapedAuctionLot
 from app.scrapers.bat_parser import parse_color
 
 SOURCE = "cars_and_bids"
@@ -104,6 +104,12 @@ def extract_image_urls(item: dict) -> list[str]:
                 if isinstance(nested, str) and nested:
                     urls.append(nested)
                     break
+            else:
+                base_url = value.get("base_url")
+                path = value.get("path")
+                if isinstance(base_url, str) and isinstance(path, str):
+                    scheme = "" if base_url.startswith(("http://", "https://")) else "https://"
+                    urls.append(f"{scheme}{base_url.rstrip('/')}/{path.lstrip('/')}")
     for key in ("photos", "images"):
         values = item.get(key)
         if not isinstance(values, list):
@@ -120,11 +126,43 @@ def extract_image_urls(item: dict) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
-def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
-    """Convert a raw Cars & Bids auction dict into a ScrapedListing.
+def parse_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int | float):
+        return str(value)
+    return None
+
+
+def parse_seller(value: object) -> str | None:
+    if isinstance(value, dict):
+        for key in ("username", "name", "display_name"):
+            parsed = parse_text(value.get(key))
+            if parsed:
+                return parsed
+        return None
+    return parse_text(value)
+
+
+def parse_vehicle_identity(title: str) -> tuple[str | None, str | None, str | None]:
+    title_without_year = re.sub(r"^\s*(?:19|20)\d{2}\s+", "", title)
+    words = title_without_year.split()
+    if len(words) < 2:
+        return None, None, None
+    make = words[0]
+    model = words[1]
+    trim = " ".join(words[2:]) or None
+    return make, model, trim
+
+
+def parse_auction(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
+    """Convert a raw Cars & Bids auction dict into a ScrapedAuctionLot.
 
     Returns ``(listing, "")`` on success or ``(None, skip_reason)`` on failure.
-    Only confirmed sales (status == "sold") are accepted.
     """
     auction_id = item.get("id", "")
     if not auction_id:
@@ -154,50 +192,49 @@ def parse_auction(item: dict) -> tuple[ScrapedListing | None, str]:
     source_url = build_source_url(auction_id)
 
     sub_title = item.get("sub_title") or ""
-    listing = ScrapedListing(
+    make, model, trim = parse_vehicle_identity(title)
+    raw_seller = item.get("seller")
+    lot = ScrapedAuctionLot(
         source=SOURCE,
-        source_url=source_url,
-        sale_type="auction",
-        raw_title=title,
-        year=year,
-        asking_price=high_bid,
-        sold_price=sold_price,
-        is_sold=auction_status == "sold",
-        listed_at=listed_at,
-        sold_at=sold_at if auction_status == "sold" else None,
-        mileage=mileage,
-        color=parse_color(sub_title),
-        transmission=item.get("transmission"),
-        location=item.get("location"),
-        no_reserve=bool(item.get("no_reserve", False)),
-        condition_notes=sub_title or None,
         source_auction_id=auction_id,
+        canonical_url=source_url,
         auction_status=auction_status,
+        sold_price=sold_price,
         high_bid=high_bid,
         bid_count=parse_int(
             item.get("bid_count") or item.get("bids_count") or item.get("num_bids")
         ),
+        currency="USD",
+        listed_at=None,
+        ended_at=listed_at,
+        year=year,
+        make=make,
+        model=model,
+        trim=trim,
+        mileage=mileage,
+        exterior_color=parse_color(sub_title),
+        transmission=parse_text(item.get("transmission")),
+        drivetrain=parse_text(item.get("drivetrain")),
+        engine=parse_text(item.get("engine")),
+        location=parse_text(item.get("location")),
+        seller=parse_seller(raw_seller),
         title=title,
         subtitle=sub_title or None,
+        raw_summary=sub_title or None,
         image_urls=extract_image_urls(item),
         vehicle_details={
             key: item[key]
-            for key in ("engine", "drivetrain", "transmission", "location")
+            for key in (
+                "engine",
+                "drivetrain",
+                "transmission",
+                "location",
+                "no_reserve",
+                "seller",
+            )
             if item.get(key) is not None
         },
-        raw_data={
-            "id": auction_id,
-            "title": title,
-            "sub_title": sub_title or None,
-            "status": item.get("status"),
-            "auction_status": auction_status,
-            "sale_amount": sale_amount,
-            "current_bid": current_bid,
-            "mileage": item.get("mileage"),
-            "transmission": item.get("transmission"),
-            "location": item.get("location"),
-            "no_reserve": item.get("no_reserve"),
-            "bid_count": item.get("bid_count") or item.get("bids_count") or item.get("num_bids"),
-        },
+        list_payload=item,
+        detail_payload={},
     )
-    return listing, ""
+    return lot, ""

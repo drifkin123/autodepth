@@ -7,8 +7,8 @@ authenticated API responses, and extract structured auction data — no HTML par
 The scraper navigates to the past-auctions page, captures closed-auction API
 responses, and paginates by clicking "Next" until no more results are available.
 
-Sold and reserve-not-met auctions are ingested. Only confirmed sold prices are
-used by the depreciation model.
+Sold and reserve-not-met auctions are ingested. Only confirmed sold auctions
+populate ``sold_price``; reserve-not-met lots preserve ``high_bid``.
 """
 from __future__ import annotations
 
@@ -16,9 +16,8 @@ import asyncio
 import logging
 from typing import Any
 
-from app.scrapers.base import BaseScraper, ScrapedListing
+from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 from app.scrapers.cars_and_bids_parser import SOURCE, parse_auction
-from app.scrapers.makes import CAB_MAKES
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +56,7 @@ class CarsAndBidsScraper(BaseScraper):
             return [GLOBAL_CAB_ENTRY]
         if "all" in self._selected_keys:
             return [GLOBAL_CAB_ENTRY]
-        return [
-            (key, label, query)
-            for key, label, query in CAB_MAKES
-            if key in self._selected_keys
-        ]
+        return []
 
     async def _fetch_search_results(self, search_query: str) -> list[dict]:
         """Use Playwright to search C&B and return raw auction dicts.
@@ -133,13 +128,13 @@ class CarsAndBidsScraper(BaseScraper):
 
         return all_auctions
 
-    async def scrape(self) -> list[ScrapedListing]:
+    async def scrape(self) -> list[ScrapedAuctionLot]:
         entries = self._get_entries()
         if not entries:
             await self._emit("warning", "No C&B search terms selected — nothing to scrape.")
             return []
 
-        all_listings: list[ScrapedListing] = []
+        all_lots: list[ScrapedAuctionLot] = []
         seen_urls: set[str] = set()
         await self._emit(
             "progress",
@@ -169,11 +164,11 @@ class CarsAndBidsScraper(BaseScraper):
                 listing, reason = parse_auction(item)
                 if listing is None:
                     skip_counts[reason] = skip_counts.get(reason, 0) + 1
-                elif listing.source_url in seen_urls:
+                elif listing.canonical_url in seen_urls:
                     dup_count += 1
                 else:
-                    seen_urls.add(listing.source_url)
-                    all_listings.append(listing)
+                    seen_urls.add(listing.canonical_url)
+                    all_lots.append(listing)
                     new_count += 1
 
             dup_s = f", {dup_count} dups" if dup_count else ""
@@ -182,10 +177,10 @@ class CarsAndBidsScraper(BaseScraper):
             await self._emit(
                 level,
                 f"[{i}/{len(entries)}] {label}: {len(raw_items)} raw → "
-                f"{new_count} sold{dup_s}{skip_s} (total: {len(all_listings)})",
+                f"{new_count} lots{dup_s}{skip_s} (total: {len(all_lots)})",
             )
 
             if i < len(entries):
                 await asyncio.sleep(2.0)
 
-        return all_listings
+        return all_lots

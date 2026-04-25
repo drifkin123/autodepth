@@ -1,322 +1,198 @@
-"""Integration tests: fixture files → parser → save_listing() → real PostgreSQL.
-
-These tests exercise the full scraper persistence pipeline without making any
-network requests. Each test:
-  1. Reads a real fixture file from tests/fixtures/
-  2. Parses it with the production parser (same code used in live scrapes)
-  3. Feeds the resulting ScrapedListing objects through BaseScraper.save_listing()
-     against a real test PostgreSQL database
-  4. Queries the database and asserts the correct rows were written
-
-Requires a running PostgreSQL instance. Tests are skipped automatically if the
-database is unreachable. Start one with:
-    docker-compose up -d
-
-Set TEST_DATABASE_URL to use a different database (see conftest.py).
-"""
+"""Fixture-to-database tests for the raw auction ingestion pipeline."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.vehicle_sale import VehicleSale
-from app.scrapers.base import BaseScraper, ScrapedListing
+from app.models.auction_lot import AuctionLot
+from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
-# ── Minimal concrete scraper ─────────────────────────────────────────────────
-# BaseScraper is abstract; we need a concrete subclass just to call save_listing().
-
 class _TestScraper(BaseScraper):
     source = "test"
 
-    async def scrape(self) -> list[ScrapedListing]:  # pragma: no cover
+    async def scrape(self) -> list[ScrapedAuctionLot]:  # pragma: no cover
         return []
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-async def _count_sales(session: AsyncSession) -> int:
-    result = await session.execute(select(func.count()).select_from(VehicleSale))
+async def _count_lots(session: AsyncSession) -> int:
+    result = await session.execute(select(func.count()).select_from(AuctionLot))
     return result.scalar_one()
 
 
-async def _all_sales(session: AsyncSession) -> list[VehicleSale]:
-    result = await session.execute(select(VehicleSale))
+async def _all_lots(session: AsyncSession) -> list[AuctionLot]:
+    result = await session.execute(select(AuctionLot).order_by(AuctionLot.source))
     return list(result.scalars().all())
 
 
-async def _save_listings(
-    scraper: BaseScraper, listings: list[ScrapedListing | None]
+async def _save_lots(
+    scraper: BaseScraper, lots: list[ScrapedAuctionLot | None]
 ) -> tuple[int, int]:
-    """Save all non-None listings. Returns (inserted, skipped)."""
-    inserted = skipped = 0
-    for listing in listings:
-        if listing is None:
-            skipped += 1
+    inserted = updated = 0
+    for lot in lots:
+        if lot is None:
             continue
-        saved = await scraper.save_listing(listing)
-        if saved:
+        if await scraper.save_lot(lot):
             inserted += 1
         else:
-            skipped += 1
+            updated += 1
     await scraper.session.commit()
-    return inserted, skipped
+    return inserted, updated
 
-
-# ── BaT integration tests ────────────────────────────────────────────────────
 
 class TestBatIntegration:
-    async def test_bat_fixture_inserts_vehicle_sales(
+    async def test_bat_fixture_inserts_auction_lots(
         self, integration_session: AsyncSession
     ) -> None:
-        """Parsing the BaT fixture produces sold auction rows in vehicle_sales."""
         from app.scrapers.bat_parser import extract_items_from_html, parse_item
 
         html = (FIXTURES_DIR / "bat_porsche_911_gt3.html").read_text()
-        items = extract_items_from_html(html)
-        assert items, "Fixture should contain auction items"
+        parsed_lots = [parse_item(item)[0] for item in extract_items_from_html(html)]
 
-        listings = [parse_item(item)[0] for item in items]
         scraper = _TestScraper(integration_session)
-        inserted, _ = await _save_listings(scraper, listings)
+        inserted, updated = await _save_lots(scraper, parsed_lots)
 
-        assert inserted > 0, "At least one listing should have been inserted"
+        assert inserted > 0
+        assert updated == 0
+        assert await _count_lots(integration_session) == inserted
 
-        sales = await _all_sales(integration_session)
-        assert len(sales) == inserted
-
-    async def test_bat_sale_fields_are_correct(
+    async def test_bat_raw_fields_are_persisted(
         self, integration_session: AsyncSession
     ) -> None:
-        """VehicleSale rows from BaT have the expected field values."""
         from app.scrapers.bat_parser import extract_items_from_html, parse_item
 
         html = (FIXTURES_DIR / "bat_porsche_911_gt3.html").read_text()
-        items = extract_items_from_html(html)
-        listings = [parse_item(item)[0] for item in items]
+        parsed_lots = [parse_item(item)[0] for item in extract_items_from_html(html)]
 
         scraper = _TestScraper(integration_session)
-        await _save_listings(scraper, listings)
+        await _save_lots(scraper, parsed_lots)
 
-        sales = await _all_sales(integration_session)
-        sale = sales[0]
+        lot = (await _all_lots(integration_session))[0]
 
-        assert sale.source == "bring_a_trailer"
-        assert sale.sale_type == "auction"
-        assert sale.is_sold is True
-        assert sale.sold_price is not None and sale.sold_price > 0
-        assert sale.asking_price == sale.sold_price  # BaT: asking == hammer price
-        assert sale.year is not None and 1990 <= sale.year <= 2030
-        assert sale.car_id is not None  # should fuzzy-match Porsche 911 GT3 RS
-        assert sale.source_url.startswith("https://bringatrailer.com")
+        assert lot.source == "bring_a_trailer"
+        assert lot.auction_status in {"sold", "reserve_not_met", "unknown"}
+        assert lot.canonical_url.startswith("https://bringatrailer.com")
+        assert lot.title
+        assert lot.list_payload
+        if lot.auction_status == "sold":
+            assert lot.sold_price is not None
+            assert lot.high_bid == lot.sold_price
 
-    async def test_bat_deduplication_prevents_double_insert(
+    async def test_bat_duplicate_updates_existing_lots(
         self, integration_session: AsyncSession
     ) -> None:
-        """Saving the same BaT fixture twice inserts each listing only once."""
         from app.scrapers.bat_parser import extract_items_from_html, parse_item
 
         html = (FIXTURES_DIR / "bat_porsche_911_gt3.html").read_text()
-        items = extract_items_from_html(html)
-        listings = [parse_item(item)[0] for item in items]
+        parsed_lots = [parse_item(item)[0] for item in extract_items_from_html(html)]
 
         scraper = _TestScraper(integration_session)
+        first_inserted, _ = await _save_lots(scraper, parsed_lots)
+        second_inserted, second_updated = await _save_lots(scraper, parsed_lots)
 
-        first_inserted, _ = await _save_listings(scraper, listings)
         assert first_inserted > 0
-
-        # Second pass — every URL is now a duplicate
-        second_inserted, _ = await _save_listings(scraper, listings)
         assert second_inserted == 0
+        assert second_updated == first_inserted
+        assert await _count_lots(integration_session) == first_inserted
 
-        assert await _count_sales(integration_session) == first_inserted
-
-
-# ── Cars & Bids integration tests ────────────────────────────────────────────
 
 class TestCarsAndBidsIntegration:
-    async def test_cab_fixture_inserts_vehicle_sales(
+    async def test_cab_fixture_inserts_auction_lots(
         self, integration_session: AsyncSession
     ) -> None:
-        """Parsing the Cars & Bids fixture produces sold auction rows."""
         from app.scrapers.cars_and_bids_parser import parse_auction
 
         items = json.loads((FIXTURES_DIR / "cars_and_bids_porsche_911_gt3.json").read_text())
-        assert items, "Fixture should contain auction items"
+        parsed_lots = [parse_auction(item)[0] for item in items]
 
-        listings = [parse_auction(item)[0] for item in items]
         scraper = _TestScraper(integration_session)
-        inserted, _ = await _save_listings(scraper, listings)
+        inserted, updated = await _save_lots(scraper, parsed_lots)
 
-        assert inserted > 0, "At least one listing should have been inserted"
+        assert inserted > 0
+        assert updated == 0
+        assert await _count_lots(integration_session) == inserted
 
-        sales = await _all_sales(integration_session)
-        assert len(sales) == inserted
-
-    async def test_cab_sale_fields_are_correct(
+    async def test_cab_raw_fields_are_persisted(
         self, integration_session: AsyncSession
     ) -> None:
-        """VehicleSale rows from Cars & Bids have the expected field values."""
         from app.scrapers.cars_and_bids_parser import parse_auction
 
         items = json.loads((FIXTURES_DIR / "cars_and_bids_porsche_911_gt3.json").read_text())
-        listings = [parse_auction(item)[0] for item in items]
+        parsed_lots = [parse_auction(item)[0] for item in items]
 
         scraper = _TestScraper(integration_session)
-        await _save_listings(scraper, listings)
+        await _save_lots(scraper, parsed_lots)
 
-        sales = await _all_sales(integration_session)
-        sale = sales[0]
+        lot = (await _all_lots(integration_session))[0]
 
-        assert sale.source == "cars_and_bids"
-        assert sale.sale_type == "auction"
-        assert sale.is_sold is True
-        assert sale.sold_price is not None and sale.sold_price > 0
-        assert sale.year is not None and 1990 <= sale.year <= 2030
-        assert sale.source_url.startswith("https://carsandbids.com")
+        assert lot.source == "cars_and_bids"
+        assert lot.auction_status in {"sold", "reserve_not_met", "unknown"}
+        assert lot.canonical_url.startswith("https://carsandbids.com")
+        assert lot.source_auction_id
+        assert lot.list_payload
+        if lot.auction_status == "sold":
+            assert lot.sold_price is not None
+            assert lot.high_bid == lot.sold_price
 
-    async def test_cab_deduplication_prevents_double_insert(
-        self, integration_session: AsyncSession
-    ) -> None:
-        """Saving the same C&B fixture twice inserts each listing only once."""
-        from app.scrapers.cars_and_bids_parser import parse_auction
-
-        items = json.loads((FIXTURES_DIR / "cars_and_bids_porsche_911_gt3.json").read_text())
-        listings = [parse_auction(item)[0] for item in items]
-
-        scraper = _TestScraper(integration_session)
-        first_inserted, _ = await _save_listings(scraper, listings)
-        assert first_inserted > 0
-
-        second_inserted, _ = await _save_listings(scraper, listings)
-        assert second_inserted == 0
-
-        assert await _count_sales(integration_session) == first_inserted
-
-
-# ── Cars.com integration tests ───────────────────────────────────────────────
-
-class TestCarsComIntegration:
-    async def test_cars_com_fixture_inserts_vehicle_sales(
-        self, integration_session: AsyncSession
-    ) -> None:
-        """Parsing the Cars.com fixture produces active listing rows."""
-        from app.scrapers.cars_com_parser import extract_listings_from_html, parse_listing
-
-        html = (FIXTURES_DIR / "cars_com_porsche_911_p1.html").read_text()
-        items = extract_listings_from_html(html)
-        assert items, "Fixture should contain listing items"
-
-        listings = [parse_listing(item)[0] for item in items]
-        scraper = _TestScraper(integration_session)
-        inserted, _ = await _save_listings(scraper, listings)
-
-        assert inserted > 0, "At least one listing should have been inserted"
-
-    async def test_cars_com_sale_fields_are_correct(
-        self, integration_session: AsyncSession
-    ) -> None:
-        """VehicleSale rows from Cars.com have the expected field values."""
-        from app.scrapers.cars_com_parser import extract_listings_from_html, parse_listing
-
-        html = (FIXTURES_DIR / "cars_com_porsche_911_p1.html").read_text()
-        items = extract_listings_from_html(html)
-        listings = [parse_listing(item)[0] for item in items]
-
-        scraper = _TestScraper(integration_session)
-        await _save_listings(scraper, listings)
-
-        sales = await _all_sales(integration_session)
-        sale = sales[0]
-
-        assert sale.source == "cars_com"
-        assert sale.sale_type == "listing"
-        assert sale.is_sold is False
-        assert sale.sold_price is None  # active listing — no confirmed sale
-        assert sale.asking_price > 0
-        assert sale.year is not None and 1990 <= sale.year <= 2030
-        assert sale.source_url.startswith("https://www.cars.com")
-
-    async def test_cars_com_deduplication(
-        self, integration_session: AsyncSession
-    ) -> None:
-        """Saving the same Cars.com listing twice does not create duplicate rows."""
-        from app.scrapers.cars_com_parser import extract_listings_from_html, parse_listing
-
-        html = (FIXTURES_DIR / "cars_com_porsche_911_p1.html").read_text()
-        items = extract_listings_from_html(html)
-        listings = [parse_listing(item)[0] for item in items]
-
-        scraper = _TestScraper(integration_session)
-        first_inserted, _ = await _save_listings(scraper, listings)
-        assert first_inserted > 0
-
-        second_inserted, _ = await _save_listings(scraper, listings)
-        assert second_inserted == 0
-
-        assert await _count_sales(integration_session) == first_inserted
-
-
-# ── Cross-source / pipeline tests ────────────────────────────────────────────
 
 class TestPipelineBehavior:
-    async def test_unmatched_car_is_skipped(
+    async def test_uncatalogued_vehicle_is_still_saved(
         self, integration_session: AsyncSession
     ) -> None:
-        """A listing that doesn't fuzzy-match any car in the catalog is not saved."""
-        from datetime import datetime, timezone
-
-        listing = ScrapedListing(
+        lot = ScrapedAuctionLot(
             source="bring_a_trailer",
-            source_url="https://bringatrailer.com/listing/unknown-car-99999/",
-            sale_type="auction",
-            raw_title="2022 Bugatti Chiron Super Sport",  # not in test catalog
-            year=2022,
-            asking_price=3_800_000,
+            source_auction_id="unknown-car-99999",
+            canonical_url="https://bringatrailer.com/listing/unknown-car-99999/",
+            auction_status="sold",
             sold_price=3_800_000,
-            is_sold=True,
-            listed_at=datetime(2022, 6, 1, tzinfo=timezone.utc),
-            sold_at=datetime(2022, 6, 1, tzinfo=timezone.utc),
+            high_bid=3_800_000,
+            bid_count=72,
+            year=2022,
+            make="Bugatti",
+            model="Chiron",
+            trim="Super Sport",
+            title="2022 Bugatti Chiron Super Sport",
+            list_payload={"fixture": True},
         )
 
         scraper = _TestScraper(integration_session)
-        saved = await scraper.save_listing(listing)
+        inserted = await scraper.save_lot(lot)
         await integration_session.commit()
 
-        assert saved is False
-        assert await _count_sales(integration_session) == 0
+        assert inserted is True
+        assert await _count_lots(integration_session) == 1
 
-    async def test_multiple_sources_saved_independently(
+    async def test_target_sources_saved_independently(
         self, integration_session: AsyncSession
     ) -> None:
-        """BaT and Cars.com listings for the same car coexist with different source values."""
-        from app.scrapers.bat_parser import extract_items_from_html, parse_item
-        from app.scrapers.cars_com_parser import extract_listings_from_html, parse_listing
-
-        bat_html = (FIXTURES_DIR / "bat_porsche_911_gt3.html").read_text()
-        bat_items = extract_items_from_html(bat_html)
-        bat_listings = [parse_item(i)[0] for i in bat_items]
-
-        cars_com_html = (FIXTURES_DIR / "cars_com_porsche_911_p1.html").read_text()
-        cc_items = extract_listings_from_html(cars_com_html)
-        cc_listings = [parse_listing(i)[0] for i in cc_items]
+        bat_lot = ScrapedAuctionLot(
+            source="bring_a_trailer",
+            source_auction_id="bat-1",
+            canonical_url="https://bringatrailer.com/listing/example-car/",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+        )
+        cab_lot = ScrapedAuctionLot(
+            source="cars_and_bids",
+            source_auction_id="cab-1",
+            canonical_url="https://carsandbids.com/auctions/example-car",
+            auction_status="reserve_not_met",
+            sold_price=None,
+            high_bid=90_000,
+            bid_count=8,
+        )
 
         scraper = _TestScraper(integration_session)
-        bat_inserted, _ = await _save_listings(scraper, bat_listings)
-        cc_inserted, _ = await _save_listings(scraper, cc_listings)
+        inserted, _ = await _save_lots(scraper, [bat_lot, cab_lot])
 
-        assert bat_inserted > 0
-        assert cc_inserted > 0
-
-        sales = await _all_sales(integration_session)
-        sources = {s.source for s in sales}
-        assert "bring_a_trailer" in sources
-        assert "cars_com" in sources
-        assert len(sales) == bat_inserted + cc_inserted
+        lots = await _all_lots(integration_session)
+        assert inserted == 2
+        assert {lot.source for lot in lots} == {"bring_a_trailer", "cars_and_bids"}

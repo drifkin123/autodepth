@@ -1,7 +1,4 @@
-"""Scraper runner — runs all configured scrapers in sequence.
-
-Also contains background job orchestration for admin-triggered scrape+depreciation runs.
-"""
+"""Scraper runner and background job orchestration."""
 
 from __future__ import annotations
 
@@ -29,55 +26,38 @@ async def run_all_scrapers(
     bat_selected_keys: set[str] | None = None,
     carsandbids_selected_keys: set[str] | None = None,
     cancel_event: asyncio.Event | None = None,
+    mode: str = "incremental",
 ) -> dict[str, tuple[int, int]]:
-    """
-    Run every configured scraper and return a summary dict:
-        { source_name: (records_found, records_inserted) }
-    """
     results: dict[str, tuple[int, int]] = {}
 
-    # ── Bring a Trailer ──────────────────────────────────────────────────
     scraper = BringATrailerScraper(
         session,
         broadcaster,
         selected_keys=bat_selected_keys,
         cancel_event=cancel_event,
+        mode=mode,
     )
     logger.info("Starting scraper: %s", scraper.source)
     try:
-        found, inserted = await scraper.run()
-        results[scraper.source] = (found, inserted)
-        logger.info(
-            "Scraper %s complete: %d found, %d inserted",
-            scraper.source,
-            found,
-            inserted,
-        )
+        results[scraper.source] = await scraper.run()
     except Exception:
         logger.exception("Scraper %s failed", scraper.source)
         results[scraper.source] = (-1, -1)
 
-    # ── Cars & Bids ───────────────────────────────────────────────────────
     if not (cancel_event and cancel_event.is_set()):
-        scraper_cab = CarsAndBidsScraper(
+        cab_scraper = CarsAndBidsScraper(
             session,
             broadcaster,
             selected_keys=carsandbids_selected_keys,
             cancel_event=cancel_event,
+            mode=mode,
         )
-        logger.info("Starting scraper: %s", scraper_cab.source)
+        logger.info("Starting scraper: %s", cab_scraper.source)
         try:
-            found, inserted = await scraper_cab.run()
-            results[scraper_cab.source] = (found, inserted)
-            logger.info(
-                "Scraper %s complete: %d found, %d inserted",
-                scraper_cab.source,
-                found,
-                inserted,
-            )
+            results[cab_scraper.source] = await cab_scraper.run()
         except Exception:
-            logger.exception("Scraper %s failed", scraper_cab.source)
-            results[scraper_cab.source] = (-1, -1)
+            logger.exception("Scraper %s failed", cab_scraper.source)
+            results[cab_scraper.source] = (-1, -1)
 
     return results
 
@@ -88,15 +68,14 @@ async def run_scrape_job(
     *,
     bat_selected_keys: set[str] | None = None,
     carsandbids_selected_keys: set[str] | None = None,
+    mode: str = "incremental",
 ) -> None:
-    """Run scrapers + depreciation model as a background task with event streaming."""
     from app.broadcast import ScrapeEvent
-    from app.services.depreciation import run_all_depreciation_models
 
     broadcaster.is_running = True
     cancel_event = broadcaster.new_cancel_event()
     await broadcaster.publish(
-        ScrapeEvent(type="start", source="system", message="Scrape job started.")
+        ScrapeEvent(type="start", source="system", message=f"Scrape job started ({mode}).")
     )
     try:
         async with session_factory() as session:
@@ -106,38 +85,28 @@ async def run_scrape_job(
                 bat_selected_keys=bat_selected_keys,
                 carsandbids_selected_keys=carsandbids_selected_keys,
                 cancel_event=cancel_event,
+                mode=mode,
             )
 
+        summary_parts = [
+            f"{source}: {found} found / {inserted} inserted"
+            for source, (found, inserted) in results.items()
+        ]
         if broadcaster.is_cancelled:
             await broadcaster.publish(
                 ScrapeEvent(
                     type="complete",
                     source="system",
-                    message="Scrape stopped by user. Skipping depreciation models.",
+                    message="Scrape stopped by user. " + " | ".join(summary_parts),
                     data={"scrape_results": results, "cancelled": True},
                 )
             )
         else:
-            summary_parts = [
-                f"{src}: {f} found / {i} inserted" for src, (f, i) in results.items()
-            ]
-            await broadcaster.publish(
-                ScrapeEvent(
-                    type="progress",
-                    source="system",
-                    message="All scrapers done. Running depreciation models…",
-                    data={"scrape_results": results},
-                )
-            )
-
-            async with session_factory() as session:
-                await run_all_depreciation_models(session)
-
             await broadcaster.publish(
                 ScrapeEvent(
                     type="complete",
                     source="system",
-                    message="Job complete. " + " | ".join(summary_parts),
+                    message="Scrape job complete. " + " | ".join(summary_parts),
                     data={"scrape_results": results},
                 )
             )
@@ -145,38 +114,6 @@ async def run_scrape_job(
         logger.exception("Background scrape job failed")
         await broadcaster.publish(
             ScrapeEvent(type="error", source="system", message=f"Job failed: {exc}")
-        )
-    finally:
-        broadcaster.is_running = False
-        await broadcaster.signal_done()
-
-
-async def run_depreciation_job(
-    broadcaster: ScrapeBroadcaster,
-    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
-) -> None:
-    """Re-run depreciation models without scraping, with event streaming."""
-    from app.broadcast import ScrapeEvent
-    from app.services.depreciation import run_all_depreciation_models
-
-    broadcaster.is_running = True
-    await broadcaster.publish(
-        ScrapeEvent(type="start", source="system", message="Running depreciation models…")
-    )
-    try:
-        async with session_factory() as session:
-            statuses = await run_all_depreciation_models(session)
-        await broadcaster.publish(
-            ScrapeEvent(
-                type="complete",
-                source="system",
-                message=f"Depreciation models updated for {len(statuses)} car(s).",
-                data={"statuses": statuses},
-            )
-        )
-    except Exception as exc:
-        await broadcaster.publish(
-            ScrapeEvent(type="error", source="system", message=str(exc))
         )
     finally:
         broadcaster.is_running = False

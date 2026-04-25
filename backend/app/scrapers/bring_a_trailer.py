@@ -10,7 +10,7 @@ from html import unescape
 
 import httpx
 
-from app.scrapers.base import BaseScraper, ScrapedListing
+from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 from app.scrapers.bat_parser import (
     SOURCE,
     extract_items_from_html,
@@ -115,8 +115,8 @@ class BringATrailerScraper(BaseScraper):
             if key in self._selected_keys
         ]
 
-    async def scrape(self) -> list[ScrapedListing]:
-        all_listings: list[ScrapedListing] = []
+    async def scrape(self) -> list[ScrapedAuctionLot]:
+        all_lots: list[ScrapedAuctionLot] = []
         seen_urls: set[str] = set()
 
         async with httpx.AsyncClient() as client:
@@ -158,11 +158,11 @@ class BringATrailerScraper(BaseScraper):
                     listing, reason = parse_item(item)
                     if listing is None:
                         skip_counts[reason] = skip_counts.get(reason, 0) + 1
-                    elif listing.source_url in seen_urls:
+                    elif listing.canonical_url in seen_urls:
                         dup_count += 1
                     else:
-                        seen_urls.add(listing.source_url)
-                        all_listings.append(listing)
+                        seen_urls.add(listing.canonical_url)
+                        all_lots.append(listing)
                         new_count += 1
 
                 dup_s = f", {dup_count} dups" if dup_count else ""
@@ -170,9 +170,9 @@ class BringATrailerScraper(BaseScraper):
                 level = "warning" if new_count == 0 and len(items) > 0 else "progress"
                 await self._emit(level,
                     f"[{i}/{len(urls)}] {label}: {len(items)} raw → "
-                    f"{new_count} auctions{dup_s}{skip_s} (total: {len(all_listings)})")
+                    f"{new_count} auctions{dup_s}{skip_s} (total: {len(all_lots)})")
 
                 if i < len(urls):
                     await asyncio.sleep(1.0)
 
-        return all_listings
+        return all_lots

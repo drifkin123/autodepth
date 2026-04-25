@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, Integer, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import DateTime, Index, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -11,17 +11,18 @@ from app.db import Base
 class CrawlState(Base):
     __tablename__ = "crawl_state"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), default=uuid.uuid4, primary_key=True
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     source: Mapped[str] = mapped_column(Text, nullable=False)
-    crawl_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    mode: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    pages_fetched: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    auction_ids_discovered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    oldest_closed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
     )
-    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    __table_args__ = (Index("ix_crawl_state_source_mode", "source", "crawl_mode"),)
+    __table_args__ = (
+        UniqueConstraint("source", "mode", name="uq_crawl_state_source_mode"),
+        Index("ix_crawl_state_source_mode", "source", "mode"),
+    )

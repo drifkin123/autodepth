@@ -6,9 +6,10 @@ Mocks actual scraper classes — no network or DB calls.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import app.services.scraper  # noqa: F401
+import app.services.scraper as scraper_module
 
 
 def _mock_scraper(source: str, result: tuple[int, int] = (0, 0)) -> MagicMock:
@@ -109,6 +110,22 @@ class TestRunAllScrapers:
 
     @patch("app.services.scraper.CarsAndBidsScraper")
     @patch("app.services.scraper.BringATrailerScraper")
+    async def test_passes_scrape_mode_to_scrapers(
+        self, MockBat: MagicMock, MockCab: MagicMock
+    ) -> None:
+        from app.services.scraper import run_all_scrapers
+
+        MockBat.return_value = _mock_scraper("bring_a_trailer", (10, 2))
+        MockCab.return_value = _mock_scraper("cars_and_bids", (3, 1))
+
+        session = AsyncMock()
+        await run_all_scrapers(session, mode="backfill")
+
+        assert MockBat.call_args[1]["mode"] == "backfill"
+        assert MockCab.call_args[1]["mode"] == "backfill"
+
+    @patch("app.services.scraper.CarsAndBidsScraper")
+    @patch("app.services.scraper.BringATrailerScraper")
     async def test_passes_broadcaster(
         self, MockBat: MagicMock, MockCab: MagicMock
     ) -> None:
@@ -145,3 +162,7 @@ class TestRunAllScrapers:
 
         assert results["bring_a_trailer"] == (-1, -1)
         assert results["cars_and_bids"] == (-1, -1)
+
+
+def test_scraper_service_has_no_modeling_hook() -> None:
+    assert "depreciation" not in inspect.getsource(scraper_module)

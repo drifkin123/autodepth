@@ -18,6 +18,10 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Page, Response
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -37,7 +41,7 @@ _USER_AGENT = (
 
 
 def _wait_for_api_response(
-    page: "Page",  # type: ignore[name-defined]
+    page: Page,
     captured: list[dict],
     expected_count: int,
     timeout_ms: int = 8000,
@@ -55,7 +59,7 @@ def main() -> None:
 
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"Launching Playwright (Chromium) …")
+    print("Launching Playwright (Chromium) …")
     print(f"Searching: {SEARCH_QUERY!r} on {_PAST_AUCTIONS_URL}")
 
     all_auctions: list[dict] = []
@@ -66,7 +70,7 @@ def main() -> None:
         context = browser.new_context(user_agent=_USER_AGENT)
         page = context.new_page()
 
-        def on_response(response: "Response") -> None:  # type: ignore[name-defined]
+        def on_response(response: Response) -> None:
             url = response.url
             # Only capture search-filtered responses (contain &search= param)
             if "/v2/autos/auctions" in url and "search=" in url and "status=closed" in url:
@@ -158,7 +162,7 @@ def main() -> None:
 
     if sold:
         first = sold[0]
-        print(f"\nSample sold auction:")
+        print("\nSample sold auction:")
         print(f"  Title:   {first['title']}")
         print(f"  Price:   ${first.get('sale_amount', first.get('current_bid')):,}")
         print(f"  Mileage: {first.get('mileage')}")

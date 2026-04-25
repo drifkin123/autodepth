@@ -5,7 +5,7 @@ import json
 import re
 from datetime import UTC, datetime
 
-from app.scrapers.base import ScrapedListing
+from app.scrapers.base import ScrapedAuctionLot
 
 SOURCE = "bring_a_trailer"
 
@@ -115,10 +115,21 @@ def parse_color(title: str) -> str | None:
     return m.group(0).title() if m else None
 
 
-def parse_item(item: dict) -> tuple[ScrapedListing | None, str]:
-    """Convert a single BaT JSON item dict into a ScrapedListing.
+def parse_vehicle_identity(title: str) -> tuple[str | None, str | None, str | None]:
+    title_without_year = re.sub(r"^\s*(?:[\d,.]+k?-?[Mm]ile\s+)?(?:19|20)\d{2}\s+", "", title)
+    words = title_without_year.split()
+    if len(words) < 2:
+        return None, None, None
+    make = words[0]
+    model = words[1]
+    trim = " ".join(words[2:]) or None
+    return make, model, trim
 
-    Returns (listing_or_None, skip_reason).
+
+def parse_item(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
+    """Convert a single BaT JSON item dict into a ScrapedAuctionLot.
+
+    Returns (lot_or_None, skip_reason).
     """
     title = item.get("title", "")
     if not title:
@@ -139,34 +150,36 @@ def parse_item(item: dict) -> tuple[ScrapedListing | None, str]:
     high_bid = int(item.get("current_bid") or price)
     sold_price = price if is_sold else None
 
-    listing = ScrapedListing(
-        source=SOURCE, source_url=url, sale_type="auction",
-        raw_title=title, year=year, asking_price=high_bid,
-        sold_price=sold_price, is_sold=is_sold,
-        listed_at=sold_date or datetime.now(UTC),
-        sold_at=sold_date if is_sold else None,
-        mileage=parse_mileage(title),
-        color=parse_color(title),
-        no_reserve=bool(item.get("noreserve", False)),
-        location=item.get("country"),
+    make, model, trim = parse_vehicle_identity(title)
+    lot = ScrapedAuctionLot(
+        source=SOURCE,
         source_auction_id=str(item.get("id")) if item.get("id") is not None else None,
+        canonical_url=url,
         auction_status=auction_status,
+        sold_price=sold_price,
         high_bid=high_bid,
         bid_count=parse_bid_count(item),
+        currency="USD",
+        listed_at=None,
+        ended_at=sold_date or datetime.now(UTC),
+        year=year,
+        make=make,
+        model=model,
+        trim=trim,
+        mileage=parse_mileage(title),
+        exterior_color=parse_color(title),
+        location=item.get("country"),
         title=title,
+        raw_summary=item.get("excerpt"),
         image_urls=extract_image_urls(item),
-        vehicle_details={"country": item.get("country")} if item.get("country") else {},
-        raw_data={
-            "title": title,
-            "url": url,
-            "sold_text": sold_text,
-            "bat_id": item.get("id"),
-            "auction_status": auction_status,
-            "current_bid": item.get("current_bid"),
-            "bid_count": parse_bid_count(item),
+        vehicle_details={
+            "country": item.get("country"),
+            "no_reserve": bool(item.get("noreserve", False)),
         },
+        list_payload=item,
+        detail_payload={},
     )
-    return listing, ""
+    return lot, ""
 
 
 def extract_items_from_html(html: str) -> list[dict]:
