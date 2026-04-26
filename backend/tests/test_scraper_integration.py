@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction_lot import AuctionLot
+from app.models.scrape_run import ScrapeRun
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -142,6 +143,42 @@ class TestCarsAndBidsIntegration:
 
 
 class TestPipelineBehavior:
+    async def test_run_preserves_page_persisted_lots_when_later_request_fails(
+        self, integration_session: AsyncSession
+    ) -> None:
+        page_lot = ScrapedAuctionLot(
+            source="test",
+            source_auction_id="page-1",
+            canonical_url="https://example.com/page-1",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+            title="2020 Porsche 911 GT3",
+        )
+
+        class PagePersistingScraper(BaseScraper):
+            source = "test"
+
+            async def scrape(self) -> list[ScrapedAuctionLot]:
+                await self.persist_lots([page_lot], context="page 1")
+                raise RuntimeError("rate limited after page 1")
+
+        scraper = PagePersistingScraper(integration_session)
+
+        try:
+            await scraper.run()
+        except RuntimeError:
+            pass
+
+        assert await _count_lots(integration_session) == 1
+        run_result = await integration_session.execute(select(ScrapeRun))
+        scrape_run = run_result.scalar_one()
+        assert scrape_run.status == "error"
+        assert scrape_run.records_found == 1
+        assert scrape_run.records_inserted == 1
+        assert scrape_run.error == "rate limited after page 1"
+
     async def test_uncatalogued_vehicle_is_still_saved(
         self, integration_session: AsyncSession
     ) -> None:

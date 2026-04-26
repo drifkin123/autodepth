@@ -186,8 +186,9 @@ class BringATrailerScraper(BaseScraper):
         *,
         seen_urls: set[str],
         all_lots: list[ScrapedAuctionLot],
-    ) -> tuple[int, int, dict]:
+    ) -> tuple[int, int, dict, list[ScrapedAuctionLot]]:
         new_count, dup_count, skip_counts = 0, 0, {}
+        page_lots: list[ScrapedAuctionLot] = []
         for item in items:
             listing, reason = parse_item(item)
             if listing is None:
@@ -197,8 +198,9 @@ class BringATrailerScraper(BaseScraper):
             else:
                 seen_urls.add(listing.canonical_url)
                 all_lots.append(listing)
+                page_lots.append(listing)
                 new_count += 1
-        return new_count, dup_count, skip_counts
+        return new_count, dup_count, skip_counts, page_lots
 
     async def _fetch_page_with_retries(
         self,
@@ -382,7 +384,7 @@ class BringATrailerScraper(BaseScraper):
                     continue
                 items, page_metadata = result
 
-                new_count, dup_count, skip_counts = self._parse_page_items(
+                new_count, dup_count, skip_counts, page_lots = self._parse_page_items(
                     items,
                     seen_urls=seen_urls,
                     all_lots=all_lots,
@@ -456,6 +458,8 @@ class BringATrailerScraper(BaseScraper):
                     f"[{i}/{len(urls)}] {label}: {len(items)} raw → "
                     f"{new_count} auctions{total_s}{page_s}{dup_s}{skip_s} "
                     f"(run total: {len(all_lots)})")
+                if self.current_run_id is not None:
+                    await self.persist_lots(page_lots, context=f"{label} page 1")
 
                 for page_number in range(2, page_limit + 1):
                     if self._is_cancelled():
@@ -491,7 +495,12 @@ class BringATrailerScraper(BaseScraper):
                         continue
 
                     page_items, page_result_metadata = page_result
-                    page_new_count, page_dup_count, page_skip_counts = self._parse_page_items(
+                    (
+                        page_new_count,
+                        page_dup_count,
+                        page_skip_counts,
+                        page_lots,
+                    ) = self._parse_page_items(
                         page_items,
                         seen_urls=seen_urls,
                         all_lots=all_lots,
@@ -522,6 +531,11 @@ class BringATrailerScraper(BaseScraper):
                         f"{len(page_items)} raw → {page_new_count} auctions"
                         f"{page_dup_s}{page_skip_s} (run total: {len(all_lots)})",
                     )
+                    if self.current_run_id is not None:
+                        await self.persist_lots(
+                            page_lots,
+                            context=f"{label} page {page_number}",
+                        )
 
                 if i < len(urls):
                     await asyncio.sleep(polite_delay_seconds(1.5, 4.0))
