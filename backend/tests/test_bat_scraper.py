@@ -282,6 +282,29 @@ def test_bat_detail_html_enriches_lot_fields_and_images() -> None:
     ]
 
 
+def test_bat_detail_html_enriches_bid_count_when_list_payload_omits_it() -> None:
+    item = {key: value for key, value in SOLD_ITEM.items() if key != "bids"}
+    lot, reason = parse_item(item)
+    assert lot is not None
+    assert reason == ""
+    assert lot.bid_count is None
+
+    html = """
+    <html>
+      <body>
+        <div class="listing-stats">
+          <span class="bid-count">37 bids</span>
+        </div>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.bid_count == 37
+    assert lot.detail_payload["bid_count"] == 37
+
+
 def test_bat_targets_are_exposed() -> None:
     entries = get_url_entries()
     assert entries
@@ -289,7 +312,7 @@ def test_bat_targets_are_exposed() -> None:
 
 
 @patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_page_result", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_requests.fetch_page_result", new_callable=AsyncMock)
 async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
     mock_fetch_page_result: AsyncMock,
     _mock_sleep: AsyncMock,
@@ -322,7 +345,7 @@ async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
 
 
 @patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_page_result", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_requests.fetch_page_result", new_callable=AsyncMock)
 async def test_bat_does_not_emit_zero_parse_anomaly_for_duplicate_only_page(
     mock_fetch_page_result: AsyncMock,
     _mock_sleep: AsyncMock,
@@ -397,9 +420,9 @@ def test_bat_builds_show_more_params_from_base_filter() -> None:
     ]
 
 
-@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_completed_results_page", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_page_result", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_processing.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_requests.fetch_completed_results_page", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_requests.fetch_page_result", new_callable=AsyncMock)
 async def test_bat_fetches_show_more_completed_result_pages(
     mock_fetch_page_result: AsyncMock,
     mock_fetch_completed_results_page: AsyncMock,
@@ -444,8 +467,8 @@ async def test_bat_fetches_show_more_completed_result_pages(
     mock_fetch_completed_results_page.assert_awaited_once()
 
 
-@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_detail_html", new_callable=AsyncMock)
+@patch("app.scrapers.bat_detail_requests.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bat_detail_requests.fetch_detail_html", new_callable=AsyncMock)
 async def test_bat_skips_recently_enriched_detail_pages(
     mock_fetch_detail_html: AsyncMock,
     _mock_sleep: AsyncMock,
@@ -483,8 +506,8 @@ async def test_bat_skips_recently_enriched_detail_pages(
     assert logs[0].outcome == "skipped"
 
 
-@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
-@patch("app.scrapers.bring_a_trailer.fetch_detail_html", new_callable=AsyncMock)
+@patch("app.scrapers.bat_detail_requests.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bat_detail_requests.fetch_detail_html", new_callable=AsyncMock)
 async def test_bat_logs_retry_after_when_detail_page_is_blocked(
     mock_fetch_detail_html: AsyncMock,
     _mock_sleep: AsyncMock,
