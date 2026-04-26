@@ -19,7 +19,15 @@ from typing import Any
 
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 from app.scrapers.cars_and_bids_parser import SOURCE, parse_auction
-from app.scrapers.runtime import BROWSER_HEADERS, RetryPolicy, is_block_status, polite_delay_seconds
+from app.scrapers.runtime import (
+    BROWSER_HEADERS,
+    BlockedScrapeError,
+    RetryPolicy,
+    is_block_status,
+    parse_retry_after_seconds,
+    polite_delay_seconds,
+)
+from app.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +37,26 @@ _USER_AGENT = BROWSER_HEADERS["User-Agent"]
 _RETRY_POLICY = RetryPolicy(max_attempts=2, base_delay_seconds=3.0, max_delay_seconds=20.0)
 
 GLOBAL_CAB_ENTRY: tuple[str, str, str] = ("all", "All closed auctions", "")
+
+
+def _configured_polite_delay(min_seconds: float, max_seconds: float) -> float:
+    if max_seconds < min_seconds:
+        max_seconds = min_seconds
+    return polite_delay_seconds(min_seconds, max_seconds)
+
+
+def _cab_interaction_delay_seconds() -> float:
+    return _configured_polite_delay(
+        settings.cab_interaction_delay_min,
+        settings.cab_interaction_delay_max,
+    )
+
+
+def _cab_search_delay_seconds() -> float:
+    return _configured_polite_delay(
+        settings.cab_search_delay_min,
+        settings.cab_search_delay_max,
+    )
 
 
 def get_all_url_keys() -> list[str]:
@@ -68,6 +96,7 @@ class CarsAndBidsScraper(BaseScraper):
 
         all_auctions: list[dict] = []
         captured: list[dict] = []
+        blocked_error: BlockedScrapeError | None = None
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -81,10 +110,16 @@ class CarsAndBidsScraper(BaseScraper):
             page = await context.new_page()
 
             async def on_response(response: Any) -> None:
+                nonlocal blocked_error
                 url = response.url
                 if "/v2/autos/auctions" in url and "status=closed" in url:
                     started = time.perf_counter()
                     if is_block_status(response.status):
+                        retry_after_seconds = parse_retry_after_seconds(
+                            response.headers.get("retry-after")
+                            if hasattr(response, "headers")
+                            else None
+                        )
                         await self.record_request_log(
                             url=url,
                             action="api_response",
@@ -94,13 +129,22 @@ class CarsAndBidsScraper(BaseScraper):
                             outcome="blocked",
                             error_type="BlockedResponse",
                             error_message=f"Source returned {response.status}",
+                            retry_delay_seconds=retry_after_seconds,
+                            metadata_json={"retry_after_seconds": retry_after_seconds},
                         )
                         await self.record_anomaly(
                             severity="critical",
                             code="blocked_response",
                             message="Cars & Bids blocked or rate-limited an API response.",
                             url=url,
-                            metadata_json={"status_code": response.status},
+                            metadata_json={
+                                "status_code": response.status,
+                                "retry_after_seconds": retry_after_seconds,
+                            },
+                        )
+                        blocked_error = BlockedScrapeError(
+                            f"Cars & Bids returned {response.status}",
+                            status_code=response.status,
                         )
                         return
                     try:
@@ -133,16 +177,47 @@ class CarsAndBidsScraper(BaseScraper):
 
             page.on("response", on_response)
             started = time.perf_counter()
-            await page.goto(_PAST_AUCTIONS_URL, wait_until="networkidle", timeout=60_000)
+            goto_response = await page.goto(
+                _PAST_AUCTIONS_URL,
+                wait_until="networkidle",
+                timeout=60_000,
+            )
+            goto_status = goto_response.status if goto_response is not None else 200
+            if is_block_status(goto_status):
+                await self.record_request_log(
+                    url=_PAST_AUCTIONS_URL,
+                    action="playwright_goto",
+                    attempt=1,
+                    status_code=goto_status,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    outcome="blocked",
+                    error_type="BlockedResponse",
+                    error_message=f"Source returned {goto_status}",
+                )
+                await self.record_anomaly(
+                    severity="critical",
+                    code="blocked_response",
+                    message="Cars & Bids blocked or rate-limited page navigation.",
+                    url=_PAST_AUCTIONS_URL,
+                    metadata_json={"status_code": goto_status},
+                )
+                await browser.close()
+                raise BlockedScrapeError(
+                    f"Cars & Bids returned {goto_status}",
+                    status_code=goto_status,
+                )
             await self.record_request_log(
                 url=_PAST_AUCTIONS_URL,
                 action="playwright_goto",
                 attempt=1,
-                status_code=200,
+                status_code=goto_status,
                 duration_ms=int((time.perf_counter() - started) * 1000),
                 outcome="success",
             )
             await page.wait_for_timeout(2_000)
+            if settings.cab_stop_on_block and blocked_error is not None:
+                await browser.close()
+                raise blocked_error
 
             if search_query:
                 inp = await page.query_selector("input.form-control, input[type=search]")
@@ -154,7 +229,10 @@ class CarsAndBidsScraper(BaseScraper):
                 await inp.click()
                 await inp.fill(search_query)
                 await page.keyboard.press("Enter")
-                await page.wait_for_timeout(int(polite_delay_seconds(4.0, 7.0) * 1000))
+                await page.wait_for_timeout(int(_cab_interaction_delay_seconds() * 1000))
+                if settings.cab_stop_on_block and blocked_error is not None:
+                    await browser.close()
+                    raise blocked_error
 
             if captured:
                 all_auctions.extend(captured[-1].get("auctions", []))
@@ -180,6 +258,9 @@ class CarsAndBidsScraper(BaseScraper):
                     await page.wait_for_timeout(200)
                     if len(captured) > prev:
                         break
+                if settings.cab_stop_on_block and blocked_error is not None:
+                    await browser.close()
+                    raise blocked_error
                 if len(captured) > prev:
                     auctions = captured[-1].get("auctions", [])
                     if not auctions:
@@ -223,6 +304,35 @@ class CarsAndBidsScraper(BaseScraper):
             for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
                 try:
                     raw_items = await self._fetch_search_results(query)
+                    break
+                except BlockedScrapeError as exc:
+                    await self.record_request_log(
+                        url=_PAST_AUCTIONS_URL,
+                        action="closed_auction_search",
+                        attempt=attempt,
+                        status_code=exc.status_code,
+                        duration_ms=int((time.perf_counter() - search_started) * 1000),
+                        outcome="blocked",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        metadata_json={"label": label, "key": key},
+                    )
+                    await self.record_anomaly(
+                        severity="critical",
+                        code="blocked_response",
+                        message="Cars & Bids search stopped after a blocked response.",
+                        url=_PAST_AUCTIONS_URL,
+                        metadata_json={
+                            "label": label,
+                            "key": key,
+                            "status_code": exc.status_code,
+                        },
+                    )
+                    await self._emit(
+                        "error",
+                        f"[{i}/{len(entries)}] {label}: blocked — {exc}",
+                    )
+                    raw_items = None
                     break
                 except Exception as exc:
                     if attempt < _RETRY_POLICY.max_attempts:
@@ -308,6 +418,6 @@ class CarsAndBidsScraper(BaseScraper):
                 await self.persist_lots(term_lots, context=label)
 
             if i < len(entries):
-                await asyncio.sleep(polite_delay_seconds(2.0, 5.0))
+                await asyncio.sleep(_cab_search_delay_seconds())
 
         return all_lots

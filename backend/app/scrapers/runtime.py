@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TypeVar
 
 T = TypeVar("T")
@@ -63,6 +65,25 @@ def is_block_status(status_code: int | None) -> bool:
 
 def polite_delay_seconds(min_seconds: float = 1.5, max_seconds: float = 4.0) -> float:
     return random.uniform(min_seconds, max_seconds)
+
+
+def parse_retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        return max(float(stripped), 0.0)
+    except ValueError:
+        pass
+    try:
+        retry_at = email.utils.parsedate_to_datetime(stripped)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max((retry_at - datetime.now(UTC)).total_seconds(), 0.0)
 
 
 async def _maybe_sleep(

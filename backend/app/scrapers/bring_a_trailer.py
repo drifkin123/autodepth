@@ -7,6 +7,7 @@ listing data including sold prices, dates, and titles.
 import asyncio
 import re
 import time
+from datetime import UTC, datetime, timedelta
 from html import unescape
 
 import httpx
@@ -26,8 +27,10 @@ from app.scrapers.runtime import (
     RetryPolicy,
     TransientScrapeError,
     is_block_status,
+    parse_retry_after_seconds,
     polite_delay_seconds,
 )
+from app.settings import settings
 
 BASE_URL = "https://bringatrailer.com"
 MODELS_URL = f"{BASE_URL}/models/"
@@ -36,6 +39,33 @@ LISTINGS_FILTER_URL = f"{BASE_URL}/wp-json/bringatrailer/1.0/data/listings-filte
 _HEADERS = BROWSER_HEADERS
 _RETRY_POLICY = RetryPolicy(max_attempts=3, base_delay_seconds=2.0, max_delay_seconds=30.0)
 _INCREMENTAL_COMPLETED_PAGE_LIMIT = 5
+
+
+def _configured_polite_delay(min_seconds: float, max_seconds: float) -> float:
+    if max_seconds < min_seconds:
+        max_seconds = min_seconds
+    return polite_delay_seconds(min_seconds, max_seconds)
+
+
+def _list_page_delay_seconds() -> float:
+    return _configured_polite_delay(
+        settings.bat_list_page_delay_min,
+        settings.bat_list_page_delay_max,
+    )
+
+
+def _detail_page_delay_seconds() -> float:
+    return _configured_polite_delay(
+        settings.bat_detail_delay_min,
+        settings.bat_detail_delay_max,
+    )
+
+
+def _target_delay_seconds() -> float:
+    return _configured_polite_delay(
+        settings.bat_target_delay_min,
+        settings.bat_target_delay_max,
+    )
 
 
 def get_all_url_keys() -> list[str]:
@@ -212,6 +242,20 @@ class BringATrailerScraper(BaseScraper):
             return pages_total
         return min(pages_total, _INCREMENTAL_COMPLETED_PAGE_LIMIT)
 
+    async def _should_skip_detail_refresh(self, lot: ScrapedAuctionLot) -> bool:
+        if not settings.bat_skip_enriched_details:
+            return False
+        existing = await self._existing_lot(lot)
+        if existing is None or existing.detail_scraped_at is None:
+            return False
+        detail_scraped_at = existing.detail_scraped_at
+        if detail_scraped_at.tzinfo is None:
+            detail_scraped_at = detail_scraped_at.replace(tzinfo=UTC)
+        refresh_cutoff = datetime.now(UTC) - timedelta(
+            days=settings.bat_detail_refresh_after_days
+        )
+        return detail_scraped_at >= refresh_cutoff
+
     def _parse_page_items(
         self,
         items: list[dict],
@@ -261,6 +305,9 @@ class BringATrailerScraper(BaseScraper):
                 status_code = exc.response.status_code if exc.response else None
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 if is_block_status(status_code):
+                    retry_after_seconds = parse_retry_after_seconds(
+                        exc.response.headers.get("Retry-After") if exc.response else None
+                    )
                     await self.record_request_log(
                         url=url,
                         action="http_get",
@@ -270,7 +317,12 @@ class BringATrailerScraper(BaseScraper):
                         outcome="blocked",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
-                        metadata_json={"target": label, "page": page},
+                        retry_delay_seconds=retry_after_seconds,
+                        metadata_json={
+                            "target": label,
+                            "page": page,
+                            "retry_after_seconds": retry_after_seconds,
+                        },
                     )
                     await self.record_anomaly(
                         severity="critical",
@@ -281,9 +333,14 @@ class BringATrailerScraper(BaseScraper):
                             "status_code": status_code,
                             "attempt": attempt,
                             "page": page,
+                            "retry_after_seconds": retry_after_seconds,
                         },
                     )
-                    raise BlockedScrapeError(str(exc), status_code=status_code) from exc
+                    if retry_after_seconds is not None:
+                        await asyncio.sleep(retry_after_seconds)
+                    if settings.bat_stop_on_block:
+                        raise BlockedScrapeError(str(exc), status_code=status_code) from exc
+                    return None
                 if status_code is not None and status_code >= 500:
                     error = TransientScrapeError(str(exc))
                 else:
@@ -378,6 +435,9 @@ class BringATrailerScraper(BaseScraper):
                 status_code = exc.response.status_code if exc.response else None
                 duration_ms = int((time.perf_counter() - started) * 1000)
                 if is_block_status(status_code):
+                    retry_after_seconds = parse_retry_after_seconds(
+                        exc.response.headers.get("Retry-After") if exc.response else None
+                    )
                     await self.record_request_log(
                         url=lot.canonical_url,
                         action="detail_page",
@@ -387,10 +447,12 @@ class BringATrailerScraper(BaseScraper):
                         outcome="blocked",
                         error_type=type(exc).__name__,
                         error_message=str(exc),
+                        retry_delay_seconds=retry_after_seconds,
                         metadata_json={
                             "target": label,
                             "page": page,
                             "source_auction_id": lot.source_auction_id,
+                            "retry_after_seconds": retry_after_seconds,
                         },
                     )
                     await self.record_anomaly(
@@ -398,9 +460,17 @@ class BringATrailerScraper(BaseScraper):
                         code="blocked_response",
                         message=f"BaT blocked or rate-limited detail page for {label}.",
                         url=lot.canonical_url,
-                        metadata_json={"status_code": status_code, "attempt": attempt},
+                        metadata_json={
+                            "status_code": status_code,
+                            "attempt": attempt,
+                            "retry_after_seconds": retry_after_seconds,
+                        },
                     )
-                    raise BlockedScrapeError(str(exc), status_code=status_code) from exc
+                    if retry_after_seconds is not None:
+                        await asyncio.sleep(retry_after_seconds)
+                    if settings.bat_stop_on_block:
+                        raise BlockedScrapeError(str(exc), status_code=status_code) from exc
+                    return None
 
                 should_retry = (
                     status_code is not None
@@ -494,8 +564,24 @@ class BringATrailerScraper(BaseScraper):
         for index, lot in enumerate(lots, 1):
             if self._is_cancelled():
                 break
+            if await self._should_skip_detail_refresh(lot):
+                await self.record_request_log(
+                    url=lot.canonical_url,
+                    action="detail_page",
+                    attempt=1,
+                    outcome="skipped",
+                    raw_item_count=1,
+                    parsed_lot_count=0,
+                    metadata_json={
+                        "target": label,
+                        "page": page,
+                        "source_auction_id": lot.source_auction_id,
+                        "reason": "recent_detail_scrape",
+                    },
+                )
+                continue
             if index > 1:
-                await asyncio.sleep(polite_delay_seconds(0.5, 1.5))
+                await asyncio.sleep(_detail_page_delay_seconds())
             html = await self._fetch_detail_with_retries(client, lot=lot, label=label, page=page)
             if html is None:
                 continue
@@ -669,7 +755,7 @@ class BringATrailerScraper(BaseScraper):
                         break
                     if not base_filter:
                         break
-                    await asyncio.sleep(polite_delay_seconds(1.5, 4.0))
+                    await asyncio.sleep(_list_page_delay_seconds())
                     try:
                         started = time.perf_counter()
                         page_result = await self._fetch_page_with_retries(
@@ -748,6 +834,6 @@ class BringATrailerScraper(BaseScraper):
                         )
 
                 if i < len(urls):
-                    await asyncio.sleep(polite_delay_seconds(1.5, 4.0))
+                    await asyncio.sleep(_target_delay_seconds())
 
         return all_lots

@@ -9,6 +9,7 @@ from app.scrapers.runtime import (
     RetryPolicy,
     TransientScrapeError,
     is_block_status,
+    parse_retry_after_seconds,
     polite_delay_seconds,
     run_with_retries,
 )
@@ -62,3 +63,10 @@ def test_block_status_detection_and_polite_delay_bounds() -> None:
 
     delay = polite_delay_seconds(1.5, 3.5)
     assert 1.5 <= delay <= 3.5
+
+
+def test_retry_after_header_parsing() -> None:
+    assert parse_retry_after_seconds("120") == 120.0
+    assert parse_retry_after_seconds("0") == 0.0
+    assert parse_retry_after_seconds("not-a-delay") is None
+    assert parse_retry_after_seconds(None) is None
