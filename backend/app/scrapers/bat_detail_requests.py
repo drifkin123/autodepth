@@ -116,5 +116,37 @@ class BringATrailerDetailRequestMixin(BringATrailerDetailRetryMixin):
             html = await self._fetch_detail_with_retries(client, lot=lot, label=label, page=page)
             if html is None:
                 continue
-            enriched_lots.append(enrich_lot_from_detail_html(lot, html))
+            parse_started = time.perf_counter()
+            try:
+                enriched_lots.append(enrich_lot_from_detail_html(lot, html))
+            except Exception as exc:
+                await self.record_request_log(
+                    url=lot.canonical_url,
+                    action="detail_parse",
+                    attempt=1,
+                    duration_ms=int((time.perf_counter() - parse_started) * 1000),
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    raw_item_count=1,
+                    parsed_lot_count=0,
+                    metadata_json={
+                        "target": label,
+                        "page": page,
+                        "source_auction_id": lot.source_auction_id,
+                    },
+                )
+                await self.record_anomaly(
+                    severity="warning",
+                    code="detail_parse_error",
+                    message=f"BaT detail page failed to parse for {label}; continuing.",
+                    url=lot.canonical_url,
+                    metadata_json={
+                        "target": label,
+                        "page": page,
+                        "source_auction_id": lot.source_auction_id,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                )
         return enriched_lots
