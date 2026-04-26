@@ -79,10 +79,15 @@ class BaseScraper(ABC):
         self.session = session
         self.broadcaster = broadcaster
         self.mode = mode
+        self.records_found = 0
+        self.records_inserted = 0
         self.records_updated = 0
         self.current_run_id: uuid.UUID | None = None
         self.anomaly_count = 0
         self.request_log_count = 0
+        self.auction_ids_discovered: list[str] = []
+        self.ended_dates_discovered: list[datetime] = []
+        self.persisted_lot_keys: set[str] = set()
 
     async def _emit(
         self, event_type: str, message: str, data: dict | None = None
@@ -307,6 +312,59 @@ class BaseScraper(ABC):
         self.records_updated += 1
         return False
 
+    def _lot_key(self, scraped: ScrapedAuctionLot) -> str:
+        if scraped.source_auction_id:
+            return f"{scraped.source}:id:{scraped.source_auction_id}"
+        return f"{scraped.source}:url:{scraped.canonical_url}"
+
+    async def persist_lots(
+        self,
+        lots: list[ScrapedAuctionLot],
+        *,
+        context: str = "auction lots",
+    ) -> tuple[int, int]:
+        """Persist a page/batch immediately and update run counters."""
+        if not lots:
+            return 0, 0
+
+        records_inserted = 0
+        records_found = len(lots)
+        for index, lot in enumerate(lots, 1):
+            if await self.save_lot(lot):
+                records_inserted += 1
+            if index % 25 == 0:
+                await self._emit(
+                    "progress",
+                    f"Saved {index}/{records_found} {context} "
+                    f"({records_inserted} new)…",
+                    {
+                        "saved": index,
+                        "total": records_found,
+                        "inserted": records_inserted,
+                        "updated": self.records_updated,
+                    },
+                )
+
+        await self.session.commit()
+        self.records_found += records_found
+        self.records_inserted += records_inserted
+        self.auction_ids_discovered.extend(
+            lot.source_auction_id for lot in lots if lot.source_auction_id
+        )
+        self.ended_dates_discovered.extend(lot.ended_at for lot in lots if lot.ended_at)
+        self.persisted_lot_keys.update(self._lot_key(lot) for lot in lots)
+        await self._emit(
+            "progress",
+            f"Persisted {records_found} {context} "
+            f"({records_inserted} new, {self.records_updated} updated).",
+            {
+                "records_found": self.records_found,
+                "records_inserted": self.records_inserted,
+                "records_updated": self.records_updated,
+            },
+        )
+        return records_found, records_inserted
+
     async def run(self) -> tuple[int, int]:
         """Execute the scrape. Returns (records_found, records_inserted)."""
         scrape_run = ScrapeRun(
@@ -322,57 +380,55 @@ class BaseScraper(ABC):
         await self.prune_old_request_logs()
         await self.session.commit()
 
-        records_found = 0
-        records_inserted = 0
         error: str | None = None
+        self.records_found = 0
+        self.records_inserted = 0
         self.records_updated = 0
         self.anomaly_count = 0
         self.request_log_count = 0
+        self.auction_ids_discovered = []
+        self.ended_dates_discovered = []
+        self.persisted_lot_keys = set()
 
         await self._emit("start", f"Starting scraper: {self.source}")
         try:
             lots = await self.scrape()
-            records_found = len(lots)
-            if records_found == 0:
+            pending_lots = [
+                lot for lot in lots if self._lot_key(lot) not in self.persisted_lot_keys
+            ]
+            if pending_lots:
+                await self._emit(
+                    "progress",
+                    f"Fetched {len(pending_lots)} auction lots — saving to DB…",
+                    {"records_found": len(pending_lots)},
+                )
+                await self.persist_lots(pending_lots, context="auction lots")
+            if self.records_found == 0:
                 await self.record_anomaly(
                     severity="warning",
                     code="zero_lots",
                     message=f"{self.source} returned zero auction lots.",
                     metadata_json={"mode": self.mode},
                 )
-            await self._emit(
-                "progress",
-                f"Fetched {records_found} auction lots — saving to DB…",
-                {"records_found": records_found},
-            )
-            for index, lot in enumerate(lots, 1):
-                if await self.save_lot(lot):
-                    records_inserted += 1
-                if index % 25 == 0:
-                    await self._emit(
-                        "progress",
-                        f"Saved {index}/{records_found} lots ({records_inserted} new)…",
-                        {
-                            "saved": index,
-                            "total": records_found,
-                            "inserted": records_inserted,
-                            "updated": self.records_updated,
-                        },
-                    )
-            ended_dates = [lot.ended_at for lot in lots if lot.ended_at is not None]
             await self.update_crawl_state(
                 {
                     "last_success_at": datetime.now(UTC).isoformat(),
-                    "records_found": records_found,
-                    "records_inserted": records_inserted,
+                    "records_found": self.records_found,
+                    "records_inserted": self.records_inserted,
                     "records_updated": self.records_updated,
                     "request_count": self.request_log_count,
                     "anomaly_count": self.anomaly_count,
-                    "auction_ids_discovered": [
-                        lot.source_auction_id for lot in lots if lot.source_auction_id
-                    ][:5000],
-                    "oldest_ended_at": min(ended_dates).isoformat() if ended_dates else None,
-                    "newest_ended_at": max(ended_dates).isoformat() if ended_dates else None,
+                    "auction_ids_discovered": self.auction_ids_discovered[:5000],
+                    "oldest_ended_at": (
+                        min(self.ended_dates_discovered).isoformat()
+                        if self.ended_dates_discovered
+                        else None
+                    ),
+                    "newest_ended_at": (
+                        max(self.ended_dates_discovered).isoformat()
+                        if self.ended_dates_discovered
+                        else None
+                    ),
                 }
             )
             scrape_run.status = "success"
@@ -389,8 +445,8 @@ class BaseScraper(ABC):
             raise
         finally:
             scrape_run.finished_at = datetime.now(UTC)
-            scrape_run.records_found = records_found
-            scrape_run.records_inserted = records_inserted
+            scrape_run.records_found = self.records_found
+            scrape_run.records_inserted = self.records_inserted
             scrape_run.records_updated = self.records_updated
             scrape_run.error = error
             scrape_run.metadata_json = {
@@ -403,15 +459,15 @@ class BaseScraper(ABC):
 
         await self._emit(
             "complete",
-            f"Done: {records_found} found, {records_inserted} new, "
+            f"Done: {self.records_found} found, {self.records_inserted} new, "
             f"{self.records_updated} updated.",
             {
-                "records_found": records_found,
-                "records_inserted": records_inserted,
+                "records_found": self.records_found,
+                "records_inserted": self.records_inserted,
                 "records_updated": self.records_updated,
             },
         )
-        return records_found, records_inserted
+        return self.records_found, self.records_inserted
 
     @abstractmethod
     async def scrape(self) -> list[ScrapedAuctionLot]:

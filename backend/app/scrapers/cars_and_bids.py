@@ -255,6 +255,7 @@ class CarsAndBidsScraper(BaseScraper):
                 continue
 
             new_count, dup_count, skip_counts = 0, 0, {}
+            term_lots: list[ScrapedAuctionLot] = []
             for item in raw_items:
                 listing, reason = parse_auction(item)
                 if listing is None:
@@ -264,6 +265,7 @@ class CarsAndBidsScraper(BaseScraper):
                 else:
                     seen_urls.add(listing.canonical_url)
                     all_lots.append(listing)
+                    term_lots.append(listing)
                     new_count += 1
 
             await self.record_request_log(
@@ -302,6 +304,8 @@ class CarsAndBidsScraper(BaseScraper):
                 f"[{i}/{len(entries)}] {label}: {len(raw_items)} raw → "
                 f"{new_count} lots{dup_s}{skip_s} (total: {len(all_lots)})",
             )
+            if self.current_run_id is not None:
+                await self.persist_lots(term_lots, context=label)
 
             if i < len(entries):
                 await asyncio.sleep(polite_delay_seconds(2.0, 5.0))
