@@ -13,11 +13,22 @@ SOURCE = "bring_a_trailer"
 DATA_PATTERN = re.compile(
     r"var\s+auctionsCompletedInitialData\s*=\s*(\{.*?\})\s*;", re.DOTALL
 )
+YEAR_PATTERN = re.compile(r"\b(19|20)\d{2}\b")
+KNOWN_MULTI_WORD_MAKES = (
+    "Alfa Romeo",
+    "Aston Martin",
+    "De Tomaso",
+    "Land Rover",
+    "Mercedes-AMG",
+    "Mercedes-Benz",
+    "Porsche-Diesel",
+    "Rolls-Royce",
+)
 
 
 def parse_year(title: str) -> int | None:
     """Extract a 4-digit model year from a listing title."""
-    m = re.search(r"\b(19|20)\d{2}\b", title.strip())
+    m = YEAR_PATTERN.search(title.strip())
     return int(m.group(0)) if m else None
 
 
@@ -116,8 +127,21 @@ def parse_color(title: str) -> str | None:
 
 
 def parse_vehicle_identity(title: str) -> tuple[str | None, str | None, str | None]:
-    title_without_year = re.sub(r"^\s*(?:[\d,.]+k?-?[Mm]ile\s+)?(?:19|20)\d{2}\s+", "", title)
-    words = title_without_year.split()
+    year_match = YEAR_PATTERN.search(title)
+    if year_match is None:
+        return None, None, None
+    title_after_year = title[year_match.end() :].strip(" ,:-")
+    for make in KNOWN_MULTI_WORD_MAKES:
+        if title_after_year.lower().startswith(make.lower() + " "):
+            remainder = title_after_year[len(make) :].strip()
+            words = remainder.split()
+            if not words:
+                return make, None, None
+            model = words[0]
+            trim = " ".join(words[1:]) or None
+            return make, model, trim
+
+    words = title_after_year.split()
     if len(words) < 2:
         return None, None, None
     make = words[0]
