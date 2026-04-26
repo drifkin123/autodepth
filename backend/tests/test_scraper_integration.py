@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -300,6 +301,43 @@ class TestPipelineBehavior:
         assert scrape_run.records_found == 1
         assert scrape_run.records_inserted == 1
         assert scrape_run.error == "rate limited after page 1"
+
+    async def test_cancelled_exception_marks_run_cancelled(
+        self, integration_session: AsyncSession
+    ) -> None:
+        page_lot = ScrapedAuctionLot(
+            source="test",
+            source_auction_id="cancelled-exception-1",
+            canonical_url="https://example.com/cancelled-exception-1",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+            title="2020 Porsche 911 GT3",
+        )
+
+        class ExternallyCancelledScraper(BaseScraper):
+            source = "test"
+
+            async def scrape(self) -> list[ScrapedAuctionLot]:
+                await self.persist_lots([page_lot], context="page 1")
+                raise asyncio.CancelledError
+
+        scraper = ExternallyCancelledScraper(integration_session)
+
+        with pytest.raises(asyncio.CancelledError):
+            await scraper.run()
+
+        assert await _count_lots(integration_session) == 1
+        run_result = await integration_session.execute(select(ScrapeRun))
+        scrape_run = run_result.scalar_one()
+        state = (await integration_session.execute(select(CrawlState))).scalar_one()
+        assert scrape_run.status == "cancelled"
+        assert scrape_run.finished_at is not None
+        assert scrape_run.records_found == 1
+        assert scrape_run.records_inserted == 1
+        assert scrape_run.error == "cancelled"
+        assert state.state["last_status"] == "cancelled"
 
     async def test_uncatalogued_vehicle_is_still_saved(
         self, integration_session: AsyncSession
