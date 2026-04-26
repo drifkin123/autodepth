@@ -180,6 +180,29 @@ def test_parse_lot_accepts_formatted_current_bid_strings() -> None:
     assert lot.high_bid == 229000
 
 
+def test_parse_lot_prefers_timestamp_end_when_sold_text_has_no_date() -> None:
+    timestamp_end = 1773861906
+
+    lot, reason = parse_item(
+        {
+            **SOLD_ITEM,
+            "sold_text": "Sold for USD $229,000",
+            "timestamp_end": timestamp_end,
+        }
+    )
+
+    assert lot is not None
+    assert reason == ""
+    assert lot.ended_at == datetime.fromtimestamp(timestamp_end, UTC)
+
+
+def test_parse_lot_skips_when_ended_at_is_unavailable() -> None:
+    lot, reason = parse_item({**SOLD_ITEM, "sold_text": "Sold for USD $229,000"})
+
+    assert lot is None
+    assert reason == "no_end_date"
+
+
 def test_skips_parts_listing_without_year() -> None:
     lot, reason = parse_item(
         {
@@ -591,6 +614,84 @@ async def test_bat_fetches_show_more_completed_result_pages(
 
     assert [lot.source_auction_id for lot in lots] == ["108526570", "108526571"]
     mock_fetch_completed_results_page.assert_awaited_once()
+
+
+@patch("app.scrapers.bat_page_processing.asyncio.sleep", new_callable=AsyncMock)
+async def test_bat_backfill_raises_when_completed_results_page_fails(
+    _mock_sleep: AsyncMock,
+) -> None:
+    session = AsyncMock()
+    scraper = BringATrailerScraper(session, mode="backfill")
+    scraper._fetch_page_with_retries = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="Porsche page 2 request failed"):
+        await scraper._process_completed_results_page(
+            AsyncMock(),
+            key="porsche",
+            label="Porsche",
+            url_path="porsche",
+            page_number=2,
+            page_limit=2,
+            pages_total=2,
+            base_filter={"keyword_s": "Porsche"},
+            items_per_page=24,
+            seen_urls=set(),
+            all_lots=[],
+            index=1,
+            total_urls=1,
+        )
+
+
+@patch("app.scrapers.bat_page_processing.parse_item")
+async def test_bat_records_parse_error_and_continues(
+    mock_parse_item: MagicMock,
+) -> None:
+    parsed_lot, reason = parse_item(SOLD_ITEM)
+    assert parsed_lot is not None
+    assert reason == ""
+    mock_parse_item.side_effect = [ValueError("bad payload"), (parsed_lot, "")]
+    session = AsyncMock()
+    session.add = MagicMock()
+    scraper = BringATrailerScraper(session)
+    all_lots = []
+
+    new_count, dup_count, skip_counts, page_lots = await scraper._parse_page_items(
+        [
+            {"title": "Bad BaT Item", "url": "https://bringatrailer.com/listing/bad/"},
+            SOLD_ITEM,
+        ],
+        seen_urls=set(),
+        all_lots=all_lots,
+    )
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert new_count == 1
+    assert dup_count == 0
+    assert skip_counts == {"parse_error": 1}
+    assert page_lots == [parsed_lot]
+    assert all_lots == [parsed_lot]
+    assert anomalies[0].code == "parse_error"
+    assert anomalies[0].metadata_json["title"] == "Bad BaT Item"
+
+
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_requests.fetch_page_result", new_callable=AsyncMock)
+async def test_bat_reraises_initial_page_block(
+    mock_fetch_page_result: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch_page_result.side_effect = BlockedScrapeError("blocked", status_code=429)
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    with pytest.raises(BlockedScrapeError):
+        await BringATrailerScraper(
+            session,
+            None,
+            selected_keys={"porsche"},
+            mode="backfill",
+        ).scrape()
 
 
 @patch("app.scrapers.bat_detail_requests.asyncio.sleep", new_callable=AsyncMock)
