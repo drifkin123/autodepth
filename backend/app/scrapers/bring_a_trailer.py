@@ -14,6 +14,7 @@ import httpx
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 from app.scrapers.bat_parser import (
     SOURCE,
+    enrich_lot_from_detail_html,
     extract_completed_metadata_from_html,
     extract_items_from_html,
     parse_item,
@@ -67,7 +68,27 @@ _EXCLUDED_MODEL_PATH_PARTS = {
     "parts",
     "side-by-side",
     "atv",
+    "airstream",
+    "ajs",
 }
+_EXCLUDED_MODEL_LABEL_TERMS = {
+    "motorcycle",
+    "trailer",
+    "motorhome",
+    "rv",
+    "camper",
+    "tractor",
+    "boat",
+    "aircraft",
+    "go-kart",
+    "minibike",
+    "scooter",
+    "wheel",
+    "wheels",
+    "parts",
+    "side-by-side",
+}
+_EXCLUDED_MODEL_LABELS = {"ajs", "airstream"}
 
 
 def extract_model_entries_from_html(html: str) -> list[tuple[str, str, str]]:
@@ -79,7 +100,12 @@ def extract_model_entries_from_html(html: str) -> list[tuple[str, str, str]]:
         if not path or path in seen_paths:
             continue
         lowered_path = path.lower()
+        lowered_label = unescape(label).strip().lower()
         if any(part in lowered_path for part in _EXCLUDED_MODEL_PATH_PARTS):
+            continue
+        if lowered_label in _EXCLUDED_MODEL_LABELS:
+            continue
+        if any(term in lowered_label for term in _EXCLUDED_MODEL_LABEL_TERMS):
             continue
         seen_paths.add(path)
         key = lowered_path.replace("/", "-")
@@ -153,6 +179,12 @@ async def fetch_completed_results_page(
         "page_current": data.get("page_current"),
         "pages_total": data.get("pages_total"),
     }
+
+
+async def fetch_detail_html(client: httpx.AsyncClient, url: str) -> str:
+    resp = await client.get(url, headers=_HEADERS, follow_redirects=True, timeout=30.0)
+    resp.raise_for_status()
+    return resp.text
 
 
 class BringATrailerScraper(BaseScraper):
@@ -314,6 +346,162 @@ class BringATrailerScraper(BaseScraper):
                 return None
         return None
 
+    async def _fetch_detail_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        lot: ScrapedAuctionLot,
+        label: str,
+        page: int,
+    ) -> str | None:
+        for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
+            started = time.perf_counter()
+            try:
+                html = await fetch_detail_html(client, lot.canonical_url)
+                await self.record_request_log(
+                    url=lot.canonical_url,
+                    action="detail_page",
+                    attempt=attempt,
+                    status_code=200,
+                    duration_ms=int((time.perf_counter() - started) * 1000),
+                    outcome="success",
+                    raw_item_count=1,
+                    parsed_lot_count=1,
+                    metadata_json={
+                        "target": label,
+                        "page": page,
+                        "source_auction_id": lot.source_auction_id,
+                    },
+                )
+                return html
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response else None
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                if is_block_status(status_code):
+                    await self.record_request_log(
+                        url=lot.canonical_url,
+                        action="detail_page",
+                        attempt=attempt,
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                        outcome="blocked",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        metadata_json={
+                            "target": label,
+                            "page": page,
+                            "source_auction_id": lot.source_auction_id,
+                        },
+                    )
+                    await self.record_anomaly(
+                        severity="critical",
+                        code="blocked_response",
+                        message=f"BaT blocked or rate-limited detail page for {label}.",
+                        url=lot.canonical_url,
+                        metadata_json={"status_code": status_code, "attempt": attempt},
+                    )
+                    raise BlockedScrapeError(str(exc), status_code=status_code) from exc
+
+                should_retry = (
+                    status_code is not None
+                    and status_code >= 500
+                    and attempt < _RETRY_POLICY.max_attempts
+                )
+                if should_retry:
+                    delay = _RETRY_POLICY.delay_for_attempt(attempt)
+                    await self.record_request_log(
+                        url=lot.canonical_url,
+                        action="detail_page",
+                        attempt=attempt,
+                        status_code=status_code,
+                        duration_ms=duration_ms,
+                        outcome="retry",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        retry_delay_seconds=delay,
+                        metadata_json={
+                            "target": label,
+                            "page": page,
+                            "source_auction_id": lot.source_auction_id,
+                        },
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                await self.record_request_log(
+                    url=lot.canonical_url,
+                    action="detail_page",
+                    attempt=attempt,
+                    status_code=status_code,
+                    duration_ms=duration_ms,
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    metadata_json={
+                        "target": label,
+                        "page": page,
+                        "source_auction_id": lot.source_auction_id,
+                    },
+                )
+                return None
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                duration_ms = int((time.perf_counter() - started) * 1000)
+                if attempt < _RETRY_POLICY.max_attempts:
+                    delay = _RETRY_POLICY.delay_for_attempt(attempt)
+                    await self.record_request_log(
+                        url=lot.canonical_url,
+                        action="detail_page",
+                        attempt=attempt,
+                        duration_ms=duration_ms,
+                        outcome="retry",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                        retry_delay_seconds=delay,
+                        metadata_json={
+                            "target": label,
+                            "page": page,
+                            "source_auction_id": lot.source_auction_id,
+                        },
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                await self.record_request_log(
+                    url=lot.canonical_url,
+                    action="detail_page",
+                    attempt=attempt,
+                    duration_ms=duration_ms,
+                    outcome="error",
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
+                    metadata_json={
+                        "target": label,
+                        "page": page,
+                        "source_auction_id": lot.source_auction_id,
+                    },
+                )
+                return None
+        return None
+
+    async def _enrich_lots_with_details(
+        self,
+        client: httpx.AsyncClient,
+        lots: list[ScrapedAuctionLot],
+        *,
+        label: str,
+        page: int,
+    ) -> list[ScrapedAuctionLot]:
+        enriched_lots: list[ScrapedAuctionLot] = []
+        for index, lot in enumerate(lots, 1):
+            if self._is_cancelled():
+                break
+            if index > 1:
+                await asyncio.sleep(polite_delay_seconds(0.5, 1.5))
+            html = await self._fetch_detail_with_retries(client, lot=lot, label=label, page=page)
+            if html is None:
+                continue
+            enriched_lots.append(enrich_lot_from_detail_html(lot, html))
+        return enriched_lots
+
     async def scrape(self) -> list[ScrapedAuctionLot]:
         all_lots: list[ScrapedAuctionLot] = []
         seen_urls: set[str] = set()
@@ -460,6 +648,17 @@ class BringATrailerScraper(BaseScraper):
                     f"(run total: {len(all_lots)})")
                 if self.current_run_id is not None:
                     await self.persist_lots(page_lots, context=f"{label} page 1")
+                    enriched_lots = await self._enrich_lots_with_details(
+                        client,
+                        page_lots,
+                        label=label,
+                        page=1,
+                    )
+                    await self.persist_lots(
+                        enriched_lots,
+                        context=f"{label} page 1 details",
+                        count_records=False,
+                    )
 
                 for page_number in range(2, page_limit + 1):
                     if self._is_cancelled():
@@ -535,6 +734,17 @@ class BringATrailerScraper(BaseScraper):
                         await self.persist_lots(
                             page_lots,
                             context=f"{label} page {page_number}",
+                        )
+                        enriched_lots = await self._enrich_lots_with_details(
+                            client,
+                            page_lots,
+                            label=label,
+                            page=page_number,
+                        )
+                        await self.persist_lots(
+                            enriched_lots,
+                            context=f"{label} page {page_number} details",
+                            count_records=False,
                         )
 
                 if i < len(urls):

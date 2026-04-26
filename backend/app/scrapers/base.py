@@ -88,6 +88,7 @@ class BaseScraper(ABC):
         self.auction_ids_discovered: list[str] = []
         self.ended_dates_discovered: list[datetime] = []
         self.persisted_lot_keys: set[str] = set()
+        self.current_scrape_run: ScrapeRun | None = None
 
     async def _emit(
         self, event_type: str, message: str, data: dict | None = None
@@ -322,6 +323,7 @@ class BaseScraper(ABC):
         lots: list[ScrapedAuctionLot],
         *,
         context: str = "auction lots",
+        count_records: bool = True,
     ) -> tuple[int, int]:
         """Persist a page/batch immediately and update run counters."""
         if not lots:
@@ -345,14 +347,23 @@ class BaseScraper(ABC):
                     },
                 )
 
-        await self.session.commit()
-        self.records_found += records_found
-        self.records_inserted += records_inserted
-        self.auction_ids_discovered.extend(
-            lot.source_auction_id for lot in lots if lot.source_auction_id
-        )
-        self.ended_dates_discovered.extend(lot.ended_at for lot in lots if lot.ended_at)
+        if count_records:
+            self.records_found += records_found
+            self.records_inserted += records_inserted
+            self.auction_ids_discovered.extend(
+                lot.source_auction_id for lot in lots if lot.source_auction_id
+            )
+            self.ended_dates_discovered.extend(lot.ended_at for lot in lots if lot.ended_at)
         self.persisted_lot_keys.update(self._lot_key(lot) for lot in lots)
+        if self.current_scrape_run is not None:
+            self.current_scrape_run.records_found = self.records_found
+            self.current_scrape_run.records_inserted = self.records_inserted
+            self.current_scrape_run.records_updated = self.records_updated
+            self.current_scrape_run.metadata_json = {
+                **(self.current_scrape_run.metadata_json or {}),
+                "anomaly_count": self.anomaly_count,
+            }
+        await self.session.commit()
         await self._emit(
             "progress",
             f"Persisted {records_found} {context} "
@@ -376,6 +387,7 @@ class BaseScraper(ABC):
         self.session.add(scrape_run)
         await self.session.flush()
         self.current_run_id = scrape_run.id
+        self.current_scrape_run = scrape_run
         await self.session.commit()
         await self.prune_old_request_logs()
         await self.session.commit()
@@ -440,6 +452,11 @@ class BaseScraper(ABC):
         except Exception as exc:
             await self.session.rollback()
             error = str(exc)
+            if self.current_run_id is not None:
+                refreshed_run = await self.session.get(ScrapeRun, self.current_run_id)
+                if refreshed_run is not None:
+                    scrape_run = refreshed_run
+                    self.current_scrape_run = refreshed_run
             scrape_run.status = "error"
             await self._emit("error", f"Scraper failed: {exc}", {"error": error})
             raise
@@ -450,12 +467,13 @@ class BaseScraper(ABC):
             scrape_run.records_updated = self.records_updated
             scrape_run.error = error
             scrape_run.metadata_json = {
-                **(scrape_run.metadata_json or {}),
+                **(scrape_run.__dict__.get("metadata_json") or {}),
                 "anomaly_count": self.anomaly_count,
             }
             await self.session.merge(scrape_run)
             await self.session.commit()
             self.current_run_id = None
+            self.current_scrape_run = None
 
         await self._emit(
             "complete",
