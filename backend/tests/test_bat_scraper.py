@@ -425,6 +425,59 @@ def test_bat_detail_html_enriches_bid_count_when_list_payload_omits_it() -> None
     assert lot.detail_payload["bid_count"] == 37
 
 
+def test_bat_detail_html_ignores_punctuation_before_bid_word() -> None:
+    item = {key: value for key, value in SOLD_ITEM.items() if key != "bids"}
+    lot, reason = parse_item(item)
+    assert lot is not None
+    assert reason == ""
+
+    html = """
+    <html>
+      <body>
+        <script type="application/ld+json">
+          {"@context":"http://schema.org","@type":"Product",
+           "description":"Great car, bid early and often."}
+        </script>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.bid_count is None
+    assert lot.detail_payload["bid_count"] is None
+
+
+def test_bat_detail_html_extracts_bid_count_from_listing_stats_not_bid_events() -> None:
+    item = {key: value for key, value in SOLD_ITEM.items() if key != "bids"}
+    lot, reason = parse_item(item)
+    assert lot is not None
+    assert reason == ""
+
+    html = """
+    <html>
+      <body>
+        <script>
+          {"content":"USD $1,982 bid placed by slsherwood"}
+        </script>
+        <table class="listing-stats ended" id="listing-bid">
+          <tbody>
+            <tr class="listing-stats-stat">
+              <td class="listing-stats-label">Bids</td>
+              <td class="listing-stats-value number-bids-value">24</td>
+            </tr>
+          </tbody>
+        </table>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.bid_count == 24
+    assert lot.detail_payload["bid_count"] == 24
+
+
 def test_bat_targets_are_exposed() -> None:
     entries = get_url_entries()
     assert entries
@@ -731,6 +784,40 @@ async def test_bat_skips_recently_enriched_detail_pages(
     assert logs
     assert logs[0].action == "detail_page"
     assert logs[0].outcome == "skipped"
+
+
+@patch("app.scrapers.bat_detail_requests.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bat_detail_requests.enrich_lot_from_detail_html")
+@patch("app.scrapers.bat_detail_requests.fetch_detail_html", new_callable=AsyncMock)
+async def test_bat_records_detail_parse_error_and_continues(
+    mock_fetch_detail_html: AsyncMock,
+    mock_enrich_lot_from_detail_html: MagicMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    lot, reason = parse_item(SOLD_ITEM)
+    assert lot is not None
+    assert reason == ""
+    mock_fetch_detail_html.return_value = "<html>detail</html>"
+    mock_enrich_lot_from_detail_html.side_effect = ValueError("bad detail payload")
+    session = AsyncMock()
+    session.add = MagicMock()
+    scraper = BringATrailerScraper(session)
+    scraper._should_skip_detail_refresh = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+    enriched = await scraper._enrich_lots_with_details(
+        AsyncMock(),
+        [lot],
+        label="Porsche 911",
+        page=1,
+    )
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert enriched == []
+    assert any(log.action == "detail_parse" and log.outcome == "error" for log in logs)
+    assert anomalies[0].code == "detail_parse_error"
+    assert anomalies[0].metadata_json["error_message"] == "bad detail payload"
 
 
 @patch("app.scrapers.bat_detail_requests.asyncio.sleep", new_callable=AsyncMock)

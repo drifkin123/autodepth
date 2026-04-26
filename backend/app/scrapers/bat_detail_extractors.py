@@ -81,11 +81,18 @@ def _extract_listing_details(html: str) -> list[str]:
 
 def _extract_bid_count(html: str) -> int | None:
     patterns = (
-        r"\b([\d,]+)\s+bids?\b",
-        r">\s*([\d,]+)\s*</[^>]+>\s*<[^>]+>\s*bids?\s*<",
+        r'class=["\'][^"\']*number-bids-value[^"\']*["\'][^>]*>\s*(\d[\d,]*)\s*<',
+        r'class=["\'][^"\']*bid-count[^"\']*["\'][^>]*>\s*(\d[\d,]*)\s+bids?\b',
+        (
+            r'<td[^>]*class=["\'][^"\']*listing-stats-label[^"\']*["\'][^>]*>'
+            r"\s*Bids?\s*</td>\s*"
+            r'<td[^>]*class=["\'][^"\']*listing-stats-value[^"\']*["\'][^>]*>'
+            r"\s*(\d[\d,]*)\s*</td>"
+        ),
+        r">\s*(\d[\d,]*)\s*</[^>]+>\s*<[^>]+>\s*bids\s*<",
     )
     for pattern in patterns:
-        match = re.search(pattern, html, re.IGNORECASE)
+        match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
         if match:
             return int(match.group(1).replace(",", ""))
     return None
