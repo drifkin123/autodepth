@@ -229,6 +229,37 @@ async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
     assert any(anomaly.code == "zero_parsed_lots" for anomaly in anomalies)
 
 
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_page_result", new_callable=AsyncMock)
+async def test_bat_does_not_emit_zero_parse_anomaly_for_duplicate_only_page(
+    mock_fetch_page_result: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch_page_result.side_effect = [
+        ([SOLD_ITEM], {"items_total": 1, "page_current": 1, "pages_total": 1}),
+        ([SOLD_ITEM], {"items_total": 1, "page_current": 1, "pages_total": 1}),
+    ]
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    class OverlappingTargetScraper(BringATrailerScraper):
+        def _get_urls(self) -> list[tuple[str, str, str]]:
+            return [
+                ("porsche", "Porsche", "porsche"),
+                ("porsche-911", "Porsche 911", "porsche/911"),
+            ]
+
+    lots = await OverlappingTargetScraper(session, None, selected_keys={"custom"}).scrape()
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert len(lots) == 1
+    assert logs[1].parsed_lot_count == 0
+    assert logs[1].metadata_json["duplicates"] == 1
+    assert not any(anomaly.code == "zero_parsed_lots" for anomaly in anomalies)
+
+
 def test_bat_extracts_completed_pagination_telemetry() -> None:
     html = """
     <script>
@@ -256,7 +287,7 @@ def test_bat_extracts_completed_pagination_telemetry() -> None:
 
 def test_bat_builds_show_more_params_from_base_filter() -> None:
     params = build_completed_results_params(
-        {"keyword_s": "Porsche", "items_type": "make"},
+        {"keyword_s": "Porsche", "items_type": "make", "keyword_pages": [1, 2]},
         page=2,
         per_page=24,
     )
@@ -269,6 +300,8 @@ def test_bat_builds_show_more_params_from_base_filter() -> None:
         ("sort", "td"),
         ("base_filter[keyword_s]", "Porsche"),
         ("base_filter[items_type]", "make"),
+        ("base_filter[keyword_pages][]", 1),
+        ("base_filter[keyword_pages][]", 2),
     ]
 
 
