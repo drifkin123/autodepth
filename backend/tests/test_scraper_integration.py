@@ -162,6 +162,13 @@ class TestPipelineBehavior:
 
             async def scrape(self) -> list[ScrapedAuctionLot]:
                 await self.persist_lots([page_lot], context="page 1")
+                run_result = await self.session.execute(
+                    select(ScrapeRun).where(ScrapeRun.id == self.current_run_id)
+                )
+                active_run = run_result.scalar_one()
+                assert active_run.status == "running"
+                assert active_run.records_found == 1
+                assert active_run.records_inserted == 1
                 raise RuntimeError("rate limited after page 1")
 
         scraper = PagePersistingScraper(integration_session)

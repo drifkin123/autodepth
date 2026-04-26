@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.models.scrape_anomaly import ScrapeAnomaly
 from app.models.scrape_request_log import ScrapeRequestLog
 from app.scrapers.bat_parser import (
+    enrich_lot_from_detail_html,
     extract_completed_metadata_from_html,
     parse_item,
     parse_mileage,
@@ -130,12 +131,6 @@ def test_parse_vehicle_identity_handles_multi_word_and_hyphenated_makes() -> Non
             "90 NAS",
         ),
         (
-            "1962 Porsche-Diesel Junior 108L Tractor",
-            "Porsche-Diesel",
-            "Junior",
-            "108L Tractor",
-        ),
-        (
             "2018 Mercedes-AMG GT R",
             "Mercedes-AMG",
             "GT",
@@ -164,7 +159,7 @@ def test_parse_reserve_not_met_lot_uses_high_bid_not_sold_price() -> None:
     assert lot.ended_at == datetime(2026, 3, 27, tzinfo=UTC)
 
 
-def test_skips_non_vehicle_without_year() -> None:
+def test_skips_parts_listing_without_year() -> None:
     lot, reason = parse_item(
         {
             **SOLD_ITEM,
@@ -174,7 +169,22 @@ def test_skips_non_vehicle_without_year() -> None:
     )
 
     assert lot is None
-    assert reason == "no_year"
+    assert reason == "parts_or_non_car"
+
+
+def test_skips_non_car_parts_rvs_and_motorcycles() -> None:
+    examples = [
+        ("2002-2005 Acura NSX Wheels", "parts_or_non_car"),
+        ("2019 Airstream Interstate Grand Tour", "parts_or_non_car"),
+        ("1955 AJS 18CS Scrambler", "parts_or_non_car"),
+        ("1962 Porsche-Diesel Junior 108L Tractor", "parts_or_non_car"),
+    ]
+
+    for title, expected_reason in examples:
+        lot, reason = parse_item({**SOLD_ITEM, "title": title})
+
+        assert lot is None
+        assert reason == expected_reason
 
 
 def test_model_directory_excludes_non_vehicle_paths() -> None:
@@ -182,12 +192,89 @@ def test_model_directory_excludes_non_vehicle_paths() -> None:
     <a class="previous-listing-image-link" href="https://bringatrailer.com/porsche/911/">
       <img alt="Porsche 911">
     </a>
+    <a class="previous-listing-image-link" href="https://bringatrailer.com/ajs/18cs/">
+      <img alt="AJS 18CS">
+    </a>
+    <a class="previous-listing-image-link" href="https://bringatrailer.com/airstream/interstate/">
+      <img alt="Airstream Interstate">
+    </a>
     <a class="previous-listing-image-link" href="https://bringatrailer.com/trailer/camper/">
       <img alt="Camper Trailer">
     </a>
     """
 
     assert extract_model_entries_from_html(html) == [("porsche-911", "Porsche 911", "porsche/911")]
+
+
+def test_bat_detail_html_enriches_lot_fields_and_images() -> None:
+    lot, reason = parse_item(SOLD_ITEM)
+    assert lot is not None
+    assert reason == ""
+
+    html = """
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {"@context":"http://schema.org","@type":"Product",
+           "description":"Factory Weissach Package car.",
+           "image":"https://bringatrailer.com/wp-content/uploads/hero.jpg?fit=940%2C626"}
+        </script>
+      </head>
+      <body>
+        <div class="post-excerpt">
+          <p><img src="https://bringatrailer.com/wp-content/uploads/detail-1.jpg?w=620"></p>
+          <p><img src="https://bringatrailer.com/wp-content/uploads/detail-2.jpg?w=620"></p>
+        </div>
+        <div class="essentials">
+          <h2 class="title">BaT Essentials</h2>
+          <div class="item item-seller"><strong>Seller</strong>:
+            <a href="/member/example/">ExampleSeller</a>
+          </div>
+          <strong>Location</strong>:
+            <a href="https://www.google.com/maps/place/Estero,%20Florida%2033928">
+              Estero, Florida 33928
+            </a>
+          <div class="item"><strong>Listing Details</strong>
+            <ul>
+              <li>Chassis: WP0AF2A9XKS164665</li>
+              <li>29k Miles</li>
+              <li>4.0-Liter Flat-Six</li>
+              <li>Seven-Speed PDK Transaxle</li>
+              <li>Black Paint w/Lizard Green Accents</li>
+              <li>Black &amp; Lizard Green Upholstery</li>
+              <li>70-Liter Fuel Tank</li>
+              <li>Owner's Manual</li>
+              <li>Transmission Oil Temperature Gauge</li>
+            </ul>
+          </div>
+          <div class="item additional"><strong>Private Party or Dealer</strong>: Private Party</div>
+          <div class="item"><strong>Lot</strong> #235490</div>
+        </div>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.vin == "WP0AF2A9XKS164665"
+    assert lot.mileage == 29000
+    assert lot.engine == "4.0-Liter Flat-Six"
+    assert lot.transmission == "Seven-Speed PDK Transaxle"
+    assert lot.exterior_color == "Black Paint w/Lizard Green Accents"
+    assert lot.interior_color == "Black & Lizard Green Upholstery"
+    assert lot.location == "Estero, Florida 33928"
+    assert lot.seller == "ExampleSeller"
+    assert lot.detail_payload["lot_number"] == "235490"
+    assert lot.detail_payload["seller_type"] == "Private Party"
+    assert lot.detail_payload["description"] == "Factory Weissach Package car."
+    assert "70-Liter Fuel Tank" in lot.vehicle_details["bat_listing_details"]
+    assert lot.detail_html == html
+    assert lot.detail_scraped_at is not None
+    assert lot.image_urls[:3] == [
+        SOLD_ITEM["image"],
+        "https://bringatrailer.com/wp-content/uploads/hero.jpg",
+        "https://bringatrailer.com/wp-content/uploads/detail-1.jpg",
+    ]
 
 
 def test_bat_targets_are_exposed() -> None:
@@ -225,7 +312,7 @@ async def test_bat_records_page_request_logs_and_zero_parse_anomaly(
     assert logs[0].source == "bring_a_trailer"
     assert logs[0].raw_item_count == 1
     assert logs[0].parsed_lot_count == 0
-    assert logs[0].skip_counts == {"no_year": 1}
+    assert logs[0].skip_counts == {"parts_or_non_car": 1}
     assert any(anomaly.code == "zero_parsed_lots" for anomaly in anomalies)
 
 
