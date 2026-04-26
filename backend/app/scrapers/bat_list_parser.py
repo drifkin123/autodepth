@@ -53,6 +53,18 @@ __all__ = [
 ]
 
 
+def _parse_timestamp_end(value: object) -> datetime | None:
+    timestamp = parse_integer_value(value)
+    if timestamp is None or timestamp <= 0:
+        return None
+    if timestamp > 10_000_000_000:
+        timestamp = int(timestamp / 1000)
+    try:
+        return datetime.fromtimestamp(timestamp, UTC)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 def parse_item(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
     title = item.get("title", "")
     if not title:
@@ -74,6 +86,9 @@ def parse_item(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
 
     make, model, trim = parse_vehicle_identity(title)
     high_bid = parse_integer_value(item.get("current_bid")) or price
+    ended_at = _parse_timestamp_end(item.get("timestamp_end")) or sold_date
+    if ended_at is None:
+        return None, "no_end_date"
     return ScrapedAuctionLot(
         source=SOURCE,
         source_auction_id=str(item.get("id")) if item.get("id") is not None else None,
@@ -82,7 +97,7 @@ def parse_item(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
         sold_price=price if is_sold else None,
         high_bid=high_bid,
         bid_count=parse_bid_count(item),
-        ended_at=sold_date or datetime.now(UTC),
+        ended_at=ended_at,
         year=year,
         make=make,
         model=model,

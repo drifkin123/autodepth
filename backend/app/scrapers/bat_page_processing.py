@@ -13,7 +13,7 @@ from app.scrapers.types import ScrapedAuctionLot
 class BringATrailerPageProcessingMixin(BringATrailerPageTelemetryMixin):
     """Helpers for processing BaT completed-result pages."""
 
-    def _parse_page_items(
+    async def _parse_page_items(
         self,
         items: list[dict],
         *,
@@ -23,7 +23,25 @@ class BringATrailerPageProcessingMixin(BringATrailerPageTelemetryMixin):
         new_count, dup_count, skip_counts = 0, 0, {}
         page_lots: list[ScrapedAuctionLot] = []
         for item in items:
-            listing, reason = parse_item(item)
+            try:
+                listing, reason = parse_item(item)
+            except Exception as exc:
+                skip_counts["parse_error"] = skip_counts.get("parse_error", 0) + 1
+                await self.record_anomaly(
+                    severity="warning",
+                    code="parse_error",
+                    message="BaT completed-result item failed to parse.",
+                    url=item.get("url") if isinstance(item.get("url"), str) else None,
+                    metadata_json={
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "title": str(item.get("title") or ""),
+                        "source_auction_id": (
+                            str(item.get("id")) if item.get("id") is not None else None
+                        ),
+                    },
+                )
+                continue
             if listing is None:
                 skip_counts[reason] = skip_counts.get(reason, 0) + 1
             elif listing.canonical_url in seen_urls:
@@ -101,14 +119,17 @@ class BringATrailerPageProcessingMixin(BringATrailerPageTelemetryMixin):
             )
             raise
         if page_result is None:
+            message = f"{label} page {page_number} request failed"
             await self._emit(
                 "error",
-                f"[{index}/{total_urls}] {label} page {page_number}: request failed",
+                f"[{index}/{total_urls}] {message}",
             )
+            if self.mode == "backfill":
+                raise RuntimeError(message)
             return True
 
         page_items, page_result_metadata = page_result
-        page_new_count, page_dup_count, page_skip_counts, page_lots = self._parse_page_items(
+        page_new_count, page_dup_count, page_skip_counts, page_lots = await self._parse_page_items(
             page_items,
             seen_urls=seen_urls,
             all_lots=all_lots,

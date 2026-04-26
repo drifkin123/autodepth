@@ -112,13 +112,13 @@ class BringATrailerScraper(
                     )
                 except BlockedScrapeError as exc:
                     await self._emit("error", f"[{i}/{len(urls)}] {label}: blocked - {exc}")
-                    break
+                    raise
                 if result is None:
                     await self._emit("error", f"[{i}/{len(urls)}] {label}: request failed")
                     continue
 
                 items, page_metadata = result
-                new_count, dup_count, skip_counts, page_lots = self._parse_page_items(
+                new_count, dup_count, skip_counts, page_lots = await self._parse_page_items(
                     items,
                     seen_urls=seen_urls,
                     all_lots=all_lots,
