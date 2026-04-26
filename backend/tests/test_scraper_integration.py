@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction_lot import AuctionLot
+from app.models.crawl_state import CrawlState
+from app.models.scrape_anomaly import ScrapeAnomaly
 from app.models.scrape_run import ScrapeRun
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
 
@@ -143,6 +147,117 @@ class TestCarsAndBidsIntegration:
 
 
 class TestPipelineBehavior:
+    async def test_cancelled_run_marks_status_and_checkpoints_partial_progress(
+        self, integration_session: AsyncSession
+    ) -> None:
+        lot = ScrapedAuctionLot(
+            source="test",
+            source_auction_id="cancelled-1",
+            canonical_url="https://example.com/cancelled-1",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+        )
+
+        class CancelledScraper(BaseScraper):
+            source = "test"
+
+            def __init__(self, session: AsyncSession) -> None:
+                super().__init__(session)
+                self._cancel_event = asyncio.Event()
+
+            async def scrape(self) -> list[ScrapedAuctionLot]:
+                await self.persist_lots([lot], context="page 1")
+                self._cancel_event.set()
+                return []
+
+        found, inserted = await CancelledScraper(integration_session).run()
+
+        assert (found, inserted) == (1, 1)
+        run = (await integration_session.execute(select(ScrapeRun))).scalar_one()
+        state = (await integration_session.execute(select(CrawlState))).scalar_one()
+        assert run.status == "cancelled"
+        assert run.finished_at is not None
+        assert state.source == "test"
+        assert state.state["last_status"] == "cancelled"
+        assert state.state["records_found"] == 1
+        assert state.state["last_context"] == "page 1"
+
+    async def test_missing_detail_enrichment_emits_warning_anomaly(
+        self, integration_session: AsyncSession
+    ) -> None:
+        lot = ScrapedAuctionLot(
+            source="test",
+            source_auction_id="missing-detail-1",
+            canonical_url="https://example.com/missing-detail-1",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+        )
+
+        class DetailAwareScraper(BaseScraper):
+            source = "test"
+            warn_missing_detail_enrichment = True
+
+            async def scrape(self) -> list[ScrapedAuctionLot]:
+                return [lot]
+
+        await DetailAwareScraper(integration_session).run()
+
+        anomaly = (await integration_session.execute(select(ScrapeAnomaly))).scalar_one()
+        assert anomaly.code == "missing_detail_enrichment"
+        assert anomaly.severity == "warning"
+        assert anomaly.metadata_json["missing_detail_count"] == 1
+
+    async def test_list_only_update_preserves_existing_detail_enrichment(
+        self, integration_session: AsyncSession
+    ) -> None:
+        detailed_lot = ScrapedAuctionLot(
+            source="bring_a_trailer",
+            source_auction_id="detail-preserve-1",
+            canonical_url="https://bringatrailer.com/listing/detail-preserve-1/",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+            vin="WP0EXAMPLE",
+            mileage=12_000,
+            detail_payload={"lot_number": "12345"},
+            detail_html="<html>detail</html>",
+            detail_scraped_at=datetime.now(UTC),
+            image_urls=[
+                "https://bringatrailer.com/wp-content/uploads/detail-1.jpg",
+                "https://bringatrailer.com/wp-content/uploads/detail-2.jpg",
+            ],
+        )
+        list_lot = ScrapedAuctionLot(
+            source="bring_a_trailer",
+            source_auction_id="detail-preserve-1",
+            canonical_url="https://bringatrailer.com/listing/detail-preserve-1/",
+            auction_status="sold",
+            sold_price=101_000,
+            high_bid=101_000,
+            bid_count=None,
+            image_urls=["https://bringatrailer.com/wp-content/uploads/thumb.jpg"],
+        )
+
+        scraper = _TestScraper(integration_session)
+        assert await scraper.save_lot(detailed_lot) is True
+        assert await scraper.save_lot(list_lot) is False
+        await integration_session.commit()
+
+        lot = (await _all_lots(integration_session))[0]
+        assert lot.sold_price == 101_000
+        assert lot.bid_count == 10
+        assert lot.vin == "WP0EXAMPLE"
+        assert lot.mileage == 12_000
+        assert lot.detail_payload == {"lot_number": "12345"}
+        assert lot.detail_html == "<html>detail</html>"
+        assert lot.detail_scraped_at is not None
+        assert [image.image_url for image in lot.images] == detailed_lot.image_urls
+
     async def test_run_preserves_page_persisted_lots_when_later_request_fails(
         self, integration_session: AsyncSession
     ) -> None:

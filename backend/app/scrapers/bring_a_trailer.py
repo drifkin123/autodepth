@@ -219,6 +219,7 @@ async def fetch_detail_html(client: httpx.AsyncClient, url: str) -> str:
 
 class BringATrailerScraper(BaseScraper):
     source = SOURCE
+    warn_missing_detail_enrichment = True
 
     def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         self._selected_keys: set[str] | None = kwargs.pop("selected_keys", None)

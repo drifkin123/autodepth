@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from inspect import isawaitable
 from typing import TYPE_CHECKING
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.auction_image import AuctionImage
@@ -68,6 +68,7 @@ class BaseScraper(ABC):
     """All source scrapers implement this interface."""
 
     source: str
+    warn_missing_detail_enrichment = False
 
     def __init__(
         self,
@@ -86,9 +87,14 @@ class BaseScraper(ABC):
         self.anomaly_count = 0
         self.request_log_count = 0
         self.auction_ids_discovered: list[str] = []
+        self.auction_urls_discovered: list[str] = []
         self.ended_dates_discovered: list[datetime] = []
         self.persisted_lot_keys: set[str] = set()
         self.current_scrape_run: ScrapeRun | None = None
+
+    def _is_cancel_requested(self) -> bool:
+        cancel_event = getattr(self, "_cancel_event", None)
+        return bool(cancel_event is not None and cancel_event.is_set())
 
     async def _emit(
         self, event_type: str, message: str, data: dict | None = None
@@ -217,6 +223,73 @@ class BaseScraper(ABC):
         existing.state = {**(existing.state or {}), **state_update}
         existing.last_run_at = now
 
+    def _crawl_state_snapshot(self, status: str, *, context: str | None = None) -> dict:
+        now = datetime.now(UTC)
+        state = {
+            "last_status": status,
+            "last_progress_at": now.isoformat(),
+            "records_found": self.records_found,
+            "records_inserted": self.records_inserted,
+            "records_updated": self.records_updated,
+            "request_count": self.request_log_count,
+            "anomaly_count": self.anomaly_count,
+            "auction_ids_discovered": self.auction_ids_discovered[:5000],
+            "auction_urls_discovered": self.auction_urls_discovered[:5000],
+            "oldest_ended_at": (
+                min(self.ended_dates_discovered).isoformat()
+                if self.ended_dates_discovered
+                else None
+            ),
+            "newest_ended_at": (
+                max(self.ended_dates_discovered).isoformat()
+                if self.ended_dates_discovered
+                else None
+            ),
+        }
+        if context:
+            state["last_context"] = context
+        if status == "success":
+            state["last_success_at"] = now.isoformat()
+        elif status == "cancelled":
+            state["last_cancelled_at"] = now.isoformat()
+        elif status == "error":
+            state["last_error_at"] = now.isoformat()
+        return state
+
+    async def _record_missing_detail_enrichment_anomaly(self) -> None:
+        if not self.warn_missing_detail_enrichment:
+            return
+        source_ids = list(dict.fromkeys(self.auction_ids_discovered))
+        source_urls = list(dict.fromkeys(self.auction_urls_discovered))
+        if not source_ids and not source_urls:
+            return
+        predicates = []
+        if source_ids:
+            predicates.append(AuctionLot.source_auction_id.in_(source_ids))
+        if source_urls:
+            predicates.append(AuctionLot.canonical_url.in_(source_urls))
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(AuctionLot)
+            .where(
+                AuctionLot.source == self.source,
+                AuctionLot.detail_scraped_at.is_(None),
+                or_(*predicates),
+            )
+        )
+        missing_detail_count = result.scalar_one()
+        if missing_detail_count <= 0:
+            return
+        await self.record_anomaly(
+            severity="warning",
+            code="missing_detail_enrichment",
+            message=(
+                f"{self.source} has {missing_detail_count} persisted lots from this run "
+                "without detail enrichment."
+            ),
+            metadata_json={"missing_detail_count": missing_detail_count},
+        )
+
     async def prune_old_request_logs(self) -> None:
         cutoff = datetime.now(UTC) - timedelta(days=settings.request_log_retention_days)
         await self.session.execute(
@@ -303,13 +376,39 @@ class BaseScraper(ABC):
                 self.session.add(image)
             return True
 
-        for key, value in self._lot_values(scraped).items():
-            setattr(existing, key, value)
-        await self.session.execute(
-            delete(AuctionImage).where(AuctionImage.auction_lot_id == existing.id)
+        preserve_existing_detail = (
+            scraped.detail_scraped_at is None and existing.detail_scraped_at is not None
         )
-        for image in self._build_images(existing.id, scraped):
-            self.session.add(image)
+        preserve_when_missing = {
+            "bid_count",
+            "vin",
+            "mileage",
+            "exterior_color",
+            "interior_color",
+            "transmission",
+            "drivetrain",
+            "engine",
+            "body_style",
+            "location",
+            "seller",
+            "vehicle_details",
+            "detail_payload",
+            "detail_html",
+            "detail_scraped_at",
+        }
+        for key, value in self._lot_values(scraped).items():
+            if preserve_existing_detail and key in preserve_when_missing:
+                if value is None or value == {}:
+                    continue
+                if key == "vehicle_details":
+                    value = {**(existing.vehicle_details or {}), **value}
+            setattr(existing, key, value)
+        if not preserve_existing_detail:
+            await self.session.execute(
+                delete(AuctionImage).where(AuctionImage.auction_lot_id == existing.id)
+            )
+            for image in self._build_images(existing.id, scraped):
+                self.session.add(image)
         self.records_updated += 1
         return False
 
@@ -353,6 +452,7 @@ class BaseScraper(ABC):
             self.auction_ids_discovered.extend(
                 lot.source_auction_id for lot in lots if lot.source_auction_id
             )
+            self.auction_urls_discovered.extend(lot.canonical_url for lot in lots)
             self.ended_dates_discovered.extend(lot.ended_at for lot in lots if lot.ended_at)
         self.persisted_lot_keys.update(self._lot_key(lot) for lot in lots)
         if self.current_scrape_run is not None:
@@ -363,6 +463,7 @@ class BaseScraper(ABC):
                 **(self.current_scrape_run.metadata_json or {}),
                 "anomaly_count": self.anomaly_count,
             }
+        await self.update_crawl_state(self._crawl_state_snapshot("running", context=context))
         await self.session.commit()
         await self._emit(
             "progress",
@@ -399,6 +500,7 @@ class BaseScraper(ABC):
         self.anomaly_count = 0
         self.request_log_count = 0
         self.auction_ids_discovered = []
+        self.auction_urls_discovered = []
         self.ended_dates_discovered = []
         self.persisted_lot_keys = set()
 
@@ -422,28 +524,10 @@ class BaseScraper(ABC):
                     message=f"{self.source} returned zero auction lots.",
                     metadata_json={"mode": self.mode},
                 )
-            await self.update_crawl_state(
-                {
-                    "last_success_at": datetime.now(UTC).isoformat(),
-                    "records_found": self.records_found,
-                    "records_inserted": self.records_inserted,
-                    "records_updated": self.records_updated,
-                    "request_count": self.request_log_count,
-                    "anomaly_count": self.anomaly_count,
-                    "auction_ids_discovered": self.auction_ids_discovered[:5000],
-                    "oldest_ended_at": (
-                        min(self.ended_dates_discovered).isoformat()
-                        if self.ended_dates_discovered
-                        else None
-                    ),
-                    "newest_ended_at": (
-                        max(self.ended_dates_discovered).isoformat()
-                        if self.ended_dates_discovered
-                        else None
-                    ),
-                }
-            )
-            scrape_run.status = "success"
+            await self._record_missing_detail_enrichment_anomaly()
+            final_status = "cancelled" if self._is_cancel_requested() else "success"
+            await self.update_crawl_state(self._crawl_state_snapshot(final_status))
+            scrape_run.status = final_status
             scrape_run.metadata_json = {
                 **(scrape_run.metadata_json or {}),
                 "anomaly_count": self.anomaly_count,
@@ -458,6 +542,7 @@ class BaseScraper(ABC):
                     scrape_run = refreshed_run
                     self.current_scrape_run = refreshed_run
             scrape_run.status = "error"
+            await self.update_crawl_state(self._crawl_state_snapshot("error"))
             await self._emit("error", f"Scraper failed: {exc}", {"error": error})
             raise
         finally:

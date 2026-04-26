@@ -282,6 +282,29 @@ def test_bat_detail_html_enriches_lot_fields_and_images() -> None:
     ]
 
 
+def test_bat_detail_html_enriches_bid_count_when_list_payload_omits_it() -> None:
+    item = {key: value for key, value in SOLD_ITEM.items() if key != "bids"}
+    lot, reason = parse_item(item)
+    assert lot is not None
+    assert reason == ""
+    assert lot.bid_count is None
+
+    html = """
+    <html>
+      <body>
+        <div class="listing-stats">
+          <span class="bid-count">37 bids</span>
+        </div>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.bid_count == 37
+    assert lot.detail_payload["bid_count"] == 37
+
+
 def test_bat_targets_are_exposed() -> None:
     entries = get_url_entries()
     assert entries

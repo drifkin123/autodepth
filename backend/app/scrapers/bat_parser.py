@@ -325,6 +325,18 @@ def _extract_listing_details(html: str) -> list[str]:
     ]
 
 
+def _extract_bid_count(html: str) -> int | None:
+    patterns = (
+        r"\b([\d,]+)\s+bids?\b",
+        r">\s*([\d,]+)\s*</[^>]+>\s*<[^>]+>\s*bids?\s*<",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            return int(match.group(1).replace(",", ""))
+    return None
+
+
 def _parse_detail_mileage(detail: str) -> int | None:
     match = re.search(r"([\d,.]+)\s*k\s*Miles?\b", detail, re.IGNORECASE)
     if match:
@@ -403,6 +415,7 @@ def extract_detail_payload_from_html(html: str) -> dict:
         "location": _strip_tags(location_match.group(1)) if location_match else None,
         "seller_type": _strip_tags(seller_type_match.group(1)) if seller_type_match else None,
         "lot_number": lot_match.group(1).replace(",", "") if lot_match else None,
+        "bid_count": _extract_bid_count(html),
         "listing_details": listing_details,
         "description": product_payload.get("description"),
         "product_payload": product_payload,
@@ -430,6 +443,7 @@ def enrich_lot_from_detail_html(
     enriched.engine = extracted.get("engine") or enriched.engine
     enriched.location = detail_payload.get("location") or enriched.location
     enriched.seller = detail_payload.get("seller") or enriched.seller
+    enriched.bid_count = detail_payload.get("bid_count") or enriched.bid_count
     enriched.detail_payload = detail_payload
     enriched.detail_html = html
     enriched.detail_scraped_at = scraped_at or datetime.now(UTC)
