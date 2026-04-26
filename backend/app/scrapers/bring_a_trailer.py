@@ -123,6 +123,9 @@ def build_completed_results_params(
     for key, value in base_filter.items():
         if value is None:
             continue
+        if isinstance(value, list):
+            params.extend((f"base_filter[{key}][]", item) for item in value)
+            continue
         params.append((f"base_filter[{key}]", value))
     return params
 
@@ -435,7 +438,7 @@ class BringATrailerScraper(BaseScraper):
                         url=f"{BASE_URL}/{url_path}/",
                         metadata_json={"pages_total": pages_total},
                     )
-                if len(items) > 0 and new_count == 0:
+                if len(items) > 0 and new_count == 0 and dup_count == 0:
                     await self.record_anomaly(
                         severity="warning",
                         code="zero_parsed_lots",
