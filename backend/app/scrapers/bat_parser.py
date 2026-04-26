@@ -338,27 +338,40 @@ def _parse_detail_mileage(detail: str) -> int | None:
 def _classify_listing_detail(detail: str, extracted: dict) -> None:
     lower_detail = detail.lower()
     if lower_detail.startswith("chassis:"):
-        extracted["vin"] = detail.split(":", 1)[1].strip()
+        extracted.setdefault("vin", detail.split(":", 1)[1].strip())
         return
     mileage = _parse_detail_mileage(detail)
     if mileage is not None:
-        extracted["mileage"] = mileage
+        extracted.setdefault("mileage", mileage)
         return
     if "paint" in lower_detail or "finished in" in lower_detail:
-        extracted["exterior_color"] = detail
+        extracted.setdefault("exterior_color", detail)
         return
     if "upholstery" in lower_detail or "interior" in lower_detail:
-        extracted["interior_color"] = detail
+        extracted.setdefault("interior_color", detail)
         return
-    if any(term in lower_detail for term in ("transmission", "transaxle", "pdk", "manual")):
-        extracted["transmission"] = detail
+    transmission_terms = (
+        "transmission",
+        "transaxle",
+        " pdk ",
+        "manual trans",
+        "manual gearbox",
+        "manual transmission",
+    )
+    transmission_noise_terms = ("owner's manual", "owners manual", "temperature gauge")
+    is_transmission = any(term in f" {lower_detail} " for term in transmission_terms)
+    is_transmission_noise = any(term in lower_detail for term in transmission_noise_terms)
+    if is_transmission and not is_transmission_noise:
+        extracted.setdefault("transmission", detail)
         return
     drivetrain_terms = ("all-wheel", "rear-wheel", "front-wheel", "awd", "4wd")
     if any(term in lower_detail for term in drivetrain_terms):
-        extracted["drivetrain"] = detail
+        extracted.setdefault("drivetrain", detail)
         return
-    if re.search(r"\b(liter|litre|flat-|v\d|inline-|engine|diesel)\b", lower_detail):
-        extracted["engine"] = detail
+    engine_noise_terms = ("fuel tank", "gas tank", "oil tank")
+    is_engine = re.search(r"\b(liter|litre|flat-|v\d|inline-|engine|diesel)\b", lower_detail)
+    if is_engine and not any(term in lower_detail for term in engine_noise_terms):
+        extracted.setdefault("engine", detail)
 
 
 def extract_detail_payload_from_html(html: str) -> dict:

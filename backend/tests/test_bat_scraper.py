@@ -242,6 +242,9 @@ def test_bat_detail_html_enriches_lot_fields_and_images() -> None:
               <li>Seven-Speed PDK Transaxle</li>
               <li>Black Paint w/Lizard Green Accents</li>
               <li>Black &amp; Lizard Green Upholstery</li>
+              <li>70-Liter Fuel Tank</li>
+              <li>Owner's Manual</li>
+              <li>Transmission Oil Temperature Gauge</li>
             </ul>
           </div>
           <div class="item additional"><strong>Private Party or Dealer</strong>: Private Party</div>
@@ -264,6 +267,7 @@ def test_bat_detail_html_enriches_lot_fields_and_images() -> None:
     assert lot.detail_payload["lot_number"] == "235490"
     assert lot.detail_payload["seller_type"] == "Private Party"
     assert lot.detail_payload["description"] == "Factory Weissach Package car."
+    assert "70-Liter Fuel Tank" in lot.vehicle_details["bat_listing_details"]
     assert lot.detail_html == html
     assert lot.detail_scraped_at is not None
     assert lot.image_urls[:3] == [
