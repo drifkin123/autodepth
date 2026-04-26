@@ -1,5 +1,6 @@
 """Shared scraper interface and run lifecycle."""
 
+import asyncio
 import uuid
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime
@@ -100,6 +101,18 @@ class BaseScraper(ScraperObservabilityMixin, ScraperPersistenceMixin, ABC):
                 "anomaly_count": self.anomaly_count,
             }
             await self.session.commit()
+        except asyncio.CancelledError:
+            await self.session.rollback()
+            error = "cancelled"
+            if self.current_run_id is not None:
+                refreshed_run = await self.session.get(ScrapeRun, self.current_run_id)
+                if refreshed_run is not None:
+                    scrape_run = refreshed_run
+                    self.current_scrape_run = refreshed_run
+            scrape_run.status = "cancelled"
+            await self.update_crawl_state(self._crawl_state_snapshot("cancelled"))
+            await self._emit("warning", "Scraper cancelled.", {"error": error})
+            raise
         except Exception as exc:
             await self.session.rollback()
             error = str(exc)

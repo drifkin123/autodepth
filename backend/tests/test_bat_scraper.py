@@ -164,6 +164,22 @@ def test_parse_reserve_not_met_lot_uses_high_bid_not_sold_price() -> None:
     assert lot.ended_at == datetime(2026, 3, 27, tzinfo=UTC)
 
 
+def test_parse_lot_falls_back_to_price_when_current_bid_is_blank() -> None:
+    lot, reason = parse_item({**SOLD_ITEM, "current_bid": " "})
+
+    assert lot is not None
+    assert reason == ""
+    assert lot.high_bid == 229000
+
+
+def test_parse_lot_accepts_formatted_current_bid_strings() -> None:
+    lot, reason = parse_item({**SOLD_ITEM, "current_bid": "USD $229,000"})
+
+    assert lot is not None
+    assert reason == ""
+    assert lot.high_bid == 229000
+
+
 def test_skips_parts_listing_without_year() -> None:
     lot, reason = parse_item(
         {
@@ -280,6 +296,87 @@ def test_bat_detail_html_enriches_lot_fields_and_images() -> None:
         "https://bringatrailer.com/wp-content/uploads/hero.jpg",
         "https://bringatrailer.com/wp-content/uploads/detail-1.jpg",
     ]
+
+
+def test_bat_detail_html_normalizes_nested_vin_labels() -> None:
+    lot, reason = parse_item(SOLD_ITEM)
+    assert lot is not None
+    assert reason == ""
+
+    html = """
+    <html>
+      <body>
+        <div class="item"><strong>Listing Details</strong>
+          <ul>
+            <li>Chassis: VIN: JH4DC2319YS003955</li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.vin == "JH4DC2319YS003955"
+
+
+def test_bat_detail_html_normalizes_chassis_suffixes_and_case() -> None:
+    lot, reason = parse_item(
+        {
+            **SOLD_ITEM,
+            "id": 108526571,
+            "title": "1973 Alfa Romeo GTV 2000",
+            "url": "https://bringatrailer.com/listing/1973-alfa-gtv-2000/",
+        }
+    )
+    assert lot is not None
+    assert reason == ""
+
+    html = """
+    <html>
+      <body>
+        <div class="item"><strong>Listing Details</strong>
+          <ul>
+            <li>Chassis: ar3021882, Model#11501</li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.vin == "AR3021882"
+
+
+def test_bat_detail_html_keeps_nonstandard_modern_chassis_out_of_vin() -> None:
+    lot, reason = parse_item(
+        {
+            **SOLD_ITEM,
+            "id": 108526572,
+            "title": "2003 Acura RSX Type-S",
+            "url": "https://bringatrailer.com/listing/2003-acura-rsx-type-s-18/",
+        }
+    )
+    assert lot is not None
+    assert reason == ""
+
+    html = """
+    <html>
+      <body>
+        <div class="item"><strong>Listing Details</strong>
+          <ul>
+            <li>Chassis: JH4DC53053CO18576</li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+
+    enrich_lot_from_detail_html(lot, html)
+
+    assert lot.vin is None
+    assert lot.vehicle_details["chassis_identifier"] == "JH4DC53053CO18576"
 
 
 def test_bat_detail_html_enriches_bid_count_when_list_payload_omits_it() -> None:
@@ -418,6 +515,35 @@ def test_bat_builds_show_more_params_from_base_filter() -> None:
         ("base_filter[keyword_pages][]", 1),
         ("base_filter[keyword_pages][]", 2),
     ]
+
+
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bat_page_requests.fetch_page_result", new_callable=AsyncMock)
+async def test_bat_treats_blank_pagination_metadata_as_single_page(
+    mock_fetch_page_result: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch_page_result.return_value = (
+        [SOLD_ITEM],
+        {
+            "base_filter": {"keyword_s": "Porsche", "items_type": "make"},
+            "items_total": "",
+            "items_per_page": " ",
+            "page_current": "",
+            "pages_total": " ",
+        },
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    lots = await BringATrailerScraper(
+        session,
+        None,
+        selected_keys={"porsche"},
+        mode="backfill",
+    ).scrape()
+
+    assert [lot.source_auction_id for lot in lots] == ["108526570"]
 
 
 @patch("app.scrapers.bat_page_processing.asyncio.sleep", new_callable=AsyncMock)

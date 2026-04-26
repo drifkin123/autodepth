@@ -7,6 +7,8 @@ import re
 from html import unescape
 from urllib.parse import urlsplit, urlunsplit
 
+from app.scrapers.bat_vehicle_identifiers import normalize_chassis_identifier
+
 
 def _strip_tags(html: str) -> str:
     text = re.sub(r"<[^>]+>", " ", html)
@@ -102,7 +104,9 @@ def _parse_detail_mileage(detail: str) -> int | None:
 def _classify_listing_detail(detail: str, extracted: dict) -> None:
     lower_detail = detail.lower()
     if lower_detail.startswith("chassis:"):
-        extracted.setdefault("vin", detail.split(":", 1)[1].strip())
+        identifier = normalize_chassis_identifier(detail)
+        if identifier is not None:
+            extracted.setdefault("vin", identifier)
         return
     mileage = _parse_detail_mileage(detail)
     if mileage is not None:

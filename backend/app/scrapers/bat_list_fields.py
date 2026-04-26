@@ -54,6 +54,24 @@ def parse_year(title: str) -> int | None:
     return int(m.group(0)) if m else None
 
 
+def parse_integer_value(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if not isinstance(value, str):
+        return None
+    normalized_value = value.strip()
+    if not normalized_value:
+        return None
+    match = re.search(r"\d[\d,]*", normalized_value)
+    if match is None:
+        return None
+    return int(match.group(0).replace(",", ""))
+
+
 def parse_mileage(title: str) -> int | None:
     m = re.search(r"([\d,.]+)k-?[Mm]ile", title)
     if m:
@@ -95,12 +113,9 @@ def parse_auction_status(sold_text: str) -> str:
 def parse_bid_count(item: dict) -> int | None:
     for key in ("bid_count", "bids", "num_bids"):
         value = item.get(key)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            continue
+        parsed_value = parse_integer_value(value)
+        if parsed_value is not None:
+            return parsed_value
     return None
 
 

@@ -3,6 +3,7 @@
 import time
 
 from app.scrapers.bat_config import BASE_URL
+from app.scrapers.bat_list_fields import parse_integer_value
 
 
 class BringATrailerPageTelemetryMixin:
@@ -22,7 +23,7 @@ class BringATrailerPageTelemetryMixin:
         page_metadata: dict,
         page_limit: int,
     ) -> None:
-        pages_total = int(page_metadata.get("pages_total") or 1)
+        pages_total = parse_integer_value(page_metadata.get("pages_total")) or 1
         await self.record_request_log(
             url=f"{BASE_URL}/{url_path}/",
             action="http_get",
@@ -65,7 +66,7 @@ class BringATrailerPageTelemetryMixin:
         page_metadata: dict,
         page_limit: int,
     ) -> None:
-        pages_total = int(page_metadata.get("pages_total") or 1)
+        pages_total = parse_integer_value(page_metadata.get("pages_total")) or 1
         items_total = page_metadata.get("items_total")
         base_filter = page_metadata.get("base_filter") or {}
         if pages_total > 1 and page_limit < pages_total:

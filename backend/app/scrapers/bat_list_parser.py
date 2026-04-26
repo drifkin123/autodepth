@@ -16,6 +16,7 @@ from app.scrapers.bat_list_fields import (
     parse_auction_status,
     parse_bid_count,
     parse_color,
+    parse_integer_value,
     parse_mileage,
     parse_sold_text,
     parse_vehicle_identity,
@@ -43,6 +44,7 @@ __all__ = [
     "parse_auction_status",
     "parse_bid_count",
     "parse_color",
+    "parse_integer_value",
     "parse_item",
     "parse_mileage",
     "parse_sold_text",
@@ -71,13 +73,14 @@ def parse_item(item: dict) -> tuple[ScrapedAuctionLot | None, str]:
         return None, "no_price"
 
     make, model, trim = parse_vehicle_identity(title)
+    high_bid = parse_integer_value(item.get("current_bid")) or price
     return ScrapedAuctionLot(
         source=SOURCE,
         source_auction_id=str(item.get("id")) if item.get("id") is not None else None,
         canonical_url=url,
         auction_status=auction_status,
         sold_price=price if is_sold else None,
-        high_bid=int(item.get("current_bid") or price),
+        high_bid=high_bid,
         bid_count=parse_bid_count(item),
         ended_at=sold_date or datetime.now(UTC),
         year=year,

@@ -16,6 +16,7 @@ from app.scrapers.bat_http import (
     fetch_detail_html,
     fetch_page_result,
 )
+from app.scrapers.bat_list_fields import parse_integer_value
 from app.scrapers.bat_list_parser import SOURCE
 from app.scrapers.bat_model_loading import BringATrailerModelLoadingMixin
 from app.scrapers.bat_page_processing import BringATrailerPageProcessingMixin
@@ -122,9 +123,11 @@ class BringATrailerScraper(
                     seen_urls=seen_urls,
                     all_lots=all_lots,
                 )
-                pages_total = int(page_metadata.get("pages_total") or 1)
+                pages_total = parse_integer_value(page_metadata.get("pages_total")) or 1
                 items_total = page_metadata.get("items_total")
-                items_per_page = int(page_metadata.get("items_per_page") or len(items) or 24)
+                items_per_page = (
+                    parse_integer_value(page_metadata.get("items_per_page")) or len(items) or 24
+                )
                 base_filter = page_metadata.get("base_filter") or {}
                 page_limit = self._completed_page_limit(pages_total)
 
