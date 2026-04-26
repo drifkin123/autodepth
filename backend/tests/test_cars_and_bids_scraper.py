@@ -15,6 +15,7 @@ from app.scrapers.cars_and_bids_parser import (
     parse_sold_date,
     parse_year,
 )
+from app.scrapers.runtime import BlockedScrapeError
 
 SOLD_ITEM = {
     "id": "abc123",
@@ -169,3 +170,25 @@ async def test_cab_emits_critical_anomaly_when_no_closed_api_response(
         anomaly.severity == "critical" and anomaly.code == "no_closed_auction_response"
         for anomaly in anomalies
     )
+
+
+@patch("app.scrapers.cars_and_bids.asyncio.sleep", new_callable=AsyncMock)
+@patch.object(CarsAndBidsScraper, "_fetch_search_results", new_callable=AsyncMock)
+async def test_cab_does_not_retry_blocked_search(
+    mock_fetch: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    mock_fetch.side_effect = BlockedScrapeError("rate limited", status_code=429)
+    session = AsyncMock()
+    session.add = MagicMock()
+
+    lots = await CarsAndBidsScraper(session, None, selected_keys=["all"]).scrape()
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert lots == []
+    assert mock_fetch.await_count == 1
+    assert logs[0].outcome == "blocked"
+    assert logs[0].status_code == 429
+    assert anomalies[0].code == "blocked_response"

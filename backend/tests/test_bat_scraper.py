@@ -5,6 +5,10 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import pytest
+
+from app.models.auction_lot import AuctionLot
 from app.models.scrape_anomaly import ScrapeAnomaly
 from app.models.scrape_request_log import ScrapeRequestLog
 from app.scrapers.bat_parser import (
@@ -21,6 +25,7 @@ from app.scrapers.bring_a_trailer import (
     extract_model_entries_from_html,
     get_url_entries,
 )
+from app.scrapers.runtime import BlockedScrapeError
 
 SOLD_ITEM = {
     "active": False,
@@ -437,3 +442,80 @@ async def test_bat_fetches_show_more_completed_result_pages(
 
     assert [lot.source_auction_id for lot in lots] == ["108526570", "108526571"]
     mock_fetch_completed_results_page.assert_awaited_once()
+
+
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_detail_html", new_callable=AsyncMock)
+async def test_bat_skips_recently_enriched_detail_pages(
+    mock_fetch_detail_html: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    lot, reason = parse_item(SOLD_ITEM)
+    assert lot is not None
+    assert reason == ""
+
+    existing = AuctionLot(
+        source="bring_a_trailer",
+        source_auction_id=lot.source_auction_id,
+        canonical_url=lot.canonical_url,
+        auction_status="sold",
+        detail_scraped_at=datetime.now(UTC),
+    )
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = existing
+    session.execute.return_value = result
+    session.add = MagicMock()
+
+    enriched = await BringATrailerScraper(session)._enrich_lots_with_details(
+        AsyncMock(),
+        [lot],
+        label="Porsche 911",
+        page=1,
+    )
+
+    assert enriched == []
+    mock_fetch_detail_html.assert_not_awaited()
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    assert logs
+    assert logs[0].action == "detail_page"
+    assert logs[0].outcome == "skipped"
+
+
+@patch("app.scrapers.bring_a_trailer.asyncio.sleep", new_callable=AsyncMock)
+@patch("app.scrapers.bring_a_trailer.fetch_detail_html", new_callable=AsyncMock)
+async def test_bat_logs_retry_after_when_detail_page_is_blocked(
+    mock_fetch_detail_html: AsyncMock,
+    _mock_sleep: AsyncMock,
+) -> None:
+    lot, reason = parse_item(SOLD_ITEM)
+    assert lot is not None
+    assert reason == ""
+
+    request = httpx.Request("GET", lot.canonical_url)
+    response = httpx.Response(429, request=request, headers={"Retry-After": "60"})
+    mock_fetch_detail_html.side_effect = httpx.HTTPStatusError(
+        "rate limited",
+        request=request,
+        response=response,
+    )
+    session = AsyncMock()
+    session.add = MagicMock()
+    scraper = BringATrailerScraper(session)
+
+    with pytest.raises(BlockedScrapeError):
+        await scraper._fetch_detail_with_retries(
+            AsyncMock(),
+            lot=lot,
+            label="Porsche 911",
+            page=1,
+        )
+
+    added_objects = [call.args[0] for call in session.add.call_args_list]
+    logs = [obj for obj in added_objects if isinstance(obj, ScrapeRequestLog)]
+    anomalies = [obj for obj in added_objects if isinstance(obj, ScrapeAnomaly)]
+    assert logs[0].outcome == "blocked"
+    assert logs[0].retry_delay_seconds == 60.0
+    assert logs[0].metadata_json["retry_after_seconds"] == 60.0
+    assert anomalies[0].metadata_json["retry_after_seconds"] == 60.0
