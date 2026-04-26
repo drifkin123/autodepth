@@ -77,6 +77,82 @@ def test_parse_sold_lot_preserves_raw_payload_and_images() -> None:
     assert lot.list_payload == SOLD_ITEM
 
 
+def test_parse_vehicle_identity_ignores_bat_title_prefixes() -> None:
+    examples = [
+        (
+            "One-Owner 2015 Porsche 911 Turbo S Cabriolet",
+            "Porsche",
+            "911",
+            "Turbo S Cabriolet",
+        ),
+        (
+            "Modified, 31k-Mile 2001 Porsche 911 Turbo Coupe 6-Speed",
+            "Porsche",
+            "911",
+            "Turbo Coupe 6-Speed",
+        ),
+        (
+            "White Gold Metallic 1992 Porsche 911 Carrera 2 Coupe",
+            "Porsche",
+            "911",
+            "Carrera 2 Coupe",
+        ),
+        (
+            "RoW 1991 Porsche 911 Carrera 2 Coupe",
+            "Porsche",
+            "911",
+            "Carrera 2 Coupe",
+        ),
+        (
+            "Sequential-VIN 1965 Porsche 911 Coupes",
+            "Porsche",
+            "911",
+            "Coupes",
+        ),
+    ]
+
+    for title, make, model, trim in examples:
+        lot, reason = parse_item({**SOLD_ITEM, "title": title})
+
+        assert reason == ""
+        assert lot is not None
+        assert lot.make == make
+        assert lot.model == model
+        assert lot.trim == trim
+
+
+def test_parse_vehicle_identity_handles_multi_word_and_hyphenated_makes() -> None:
+    examples = [
+        (
+            "1997 Land Rover Defender 90 NAS",
+            "Land Rover",
+            "Defender",
+            "90 NAS",
+        ),
+        (
+            "1962 Porsche-Diesel Junior 108L Tractor",
+            "Porsche-Diesel",
+            "Junior",
+            "108L Tractor",
+        ),
+        (
+            "2018 Mercedes-AMG GT R",
+            "Mercedes-AMG",
+            "GT",
+            "R",
+        ),
+    ]
+
+    for title, make, model, trim in examples:
+        lot, reason = parse_item({**SOLD_ITEM, "title": title})
+
+        assert reason == ""
+        assert lot is not None
+        assert lot.make == make
+        assert lot.model == model
+        assert lot.trim == trim
+
+
 def test_parse_reserve_not_met_lot_uses_high_bid_not_sold_price() -> None:
     lot, reason = parse_item(RESERVE_NOT_MET_ITEM)
 
