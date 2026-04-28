@@ -14,6 +14,10 @@ from app.models import (  # noqa: F401
     AuctionImage,
     AuctionLot,
     CrawlState,
+    CrawlTarget,
+    RawPage,
+    RawPageLot,
+    RawParseRun,
     ScrapeAnomaly,
     ScrapeRequestLog,
     ScrapeRun,
@@ -43,6 +47,7 @@ async def integration_session() -> AsyncSession:  # type: ignore[misc]
         await session.execute(
             text(
                 "TRUNCATE TABLE scrape_request_logs, scrape_anomalies, auction_images, "
+                "raw_page_lots, raw_parse_runs, raw_pages, crawl_targets, "
                 "auction_lots, scrape_runs, crawl_state RESTART IDENTITY CASCADE"
             )
         )

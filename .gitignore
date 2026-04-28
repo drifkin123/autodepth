@@ -49,6 +49,9 @@ android/
 *.log
 npm-debug.log*
 
+# Local raw scraper artifacts
+backend/data/raw_pages/
+
 # Playwright
 playwright-report/
 test-results/

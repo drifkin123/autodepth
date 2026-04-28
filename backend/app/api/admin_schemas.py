@@ -122,6 +122,54 @@ class PaginatedLots(APIModel):
     page_size: int
 
 
+class RawPageListItem(APIModel):
+    id: uuid.UUID
+    source: str
+    target_type: str
+    url: str
+    status_code: int | None
+    content_type: str
+    size_bytes: int
+    content_sha256: str
+    artifact_uri: str
+    fetched_at: datetime
+    fetch_error: str | None
+    metadata_json: dict
+
+
+class RawPageOut(RawPageListItem):
+    canonical_url: str
+    response_headers: dict
+    crawl_target_id: uuid.UUID | None
+    created_at: datetime
+
+
+class PaginatedRawPages(APIModel):
+    items: list[RawPageListItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class CrawlTargetOut(APIModel):
+    id: uuid.UUID
+    source: str
+    target_type: str
+    url: str
+    canonical_url: str
+    state: str
+    priority: int
+    attempts: int
+    next_fetch_at: datetime | None
+    locked_by: str | None
+    locked_at: datetime | None
+    last_error: str | None
+    discovered_from_raw_page_id: uuid.UUID | None
+    metadata_json: dict
+    created_at: datetime
+    updated_at: datetime
+
+
 class ScrapeRunOut(APIModel):
     id: uuid.UUID
     source: str

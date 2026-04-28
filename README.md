@@ -18,6 +18,13 @@ predictions, watchlists, auth, Cars.com listings, or a TypeScript frontend.
 - `GET /api/admin/anomalies`
 - `GET /api/admin/lots`
 - `GET /api/admin/lots/{id}`
+- `GET /api/admin/raw-review`
+- `GET /api/admin/raw-pages`
+- `GET /api/admin/raw-pages/{id}`
+- `GET /api/admin/raw-pages/{id}/content`
+- `GET /api/admin/crawl-targets`
+- `POST /api/admin/raw-pages/{id}/reparse`
+- `POST /api/admin/raw-pages/enqueue-missing-details`
 - `GET /api/admin/scrapers/bat/targets`
 - `GET /api/admin/scrapers/cars_and_bids/targets`
 - `POST /api/admin/scrape/trigger`
@@ -40,6 +47,10 @@ The initial schema is destructive and raw-first:
 - `scrape_anomalies`: warning and critical events for blocked responses, zero
   parsed lots, selector/API shape changes, and unusual scraper output.
 - `crawl_state`: checkpoint state for backfill and incremental crawling.
+- `crawl_targets`: durable raw fetch queue for BaT page/API/detail targets.
+- `raw_pages`: raw fetch metadata pointing at gzipped local artifacts.
+- `raw_parse_runs`: parser version/run history for replaying stored pages.
+- `raw_page_lots`: provenance links between raw pages and auction lots.
 
 Existing environments should reset the database before applying the new initial
 migration:
@@ -67,6 +78,7 @@ uv run uvicorn app.main:app --reload
 ```
 
 Open the admin console at `http://localhost:8000/api/admin`.
+Open raw page review at `http://localhost:8000/api/admin/raw-review`.
 
 ## Running Scrapers
 
@@ -84,6 +96,11 @@ uv run python scripts/run_scraper.py \
   --concurrent \
   --workers 3 \
   --bat-target-source models
+
+# Durable raw-page BaT pipeline
+uv run python scripts/run_raw_pipeline.py seed-bat --target-source models
+uv run arq app.services.raw_worker.WorkerSettings
+uv run python scripts/run_raw_pipeline.py reparse-bat --raw-page-id <uuid>
 ```
 
 CLI runs emit one structured line per request/page with outcome, status,
@@ -98,10 +115,15 @@ Supported modes are `incremental` and `backfill`. The mode is recorded on each
 scrape run and can be used by scrapers/checkpoint logic.
 
 Concurrent BaT backfills use a single in-process queue, one database session per
-worker, and one shared polite request limiter. Proxy/VPN fan-out is intentionally
-not implemented; future proxy support should route through an approved outbound
-proxy while preserving the same global limiter rather than bypassing source
-rate limits or block responses.
+worker, and one shared polite request limiter. The raw-page pipeline adds a
+Redis/arq worker path where Postgres `crawl_targets` are canonical and raw
+HTML/JSON artifacts are gzip files under `backend/data/raw_pages/` by default.
+The artifact store records opaque `local://...` URIs so a later S3/R2/MinIO
+backend can be added without changing fetch or parse jobs.
+
+Proxy/VPN fan-out is intentionally not implemented; future proxy support should
+route through an approved outbound proxy while preserving the same global
+limiter rather than bypassing source rate limits or block responses.
 
 Default schedule settings are nightly incremental at `15 3 * * *` and weekly
 reconciliation at `30 4 * * 0`. Request logs are retained for 90 days by
