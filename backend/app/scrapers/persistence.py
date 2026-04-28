@@ -4,10 +4,17 @@ import uuid
 from inspect import isawaitable
 
 from sqlalchemy import delete, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from app.models.auction_image import AuctionImage
 from app.models.auction_lot import AuctionLot
 from app.scrapers.types import ScrapedAuctionLot
+
+_PRESERVE_EXISTING_DETAIL_FIELDS = {
+    "bid_count", "vin", "mileage", "exterior_color", "interior_color", "transmission",
+    "drivetrain", "engine", "body_style", "location", "seller", "vehicle_details",
+    "detail_payload", "detail_html", "detail_scraped_at",
+}
 
 
 class ScraperPersistenceMixin:
@@ -82,39 +89,12 @@ class ScraperPersistenceMixin:
             existing = await existing
         return existing
 
-    async def save_lot(self, scraped: ScrapedAuctionLot) -> bool:
-        """Insert or update an auction lot. Returns True for a newly inserted lot."""
-        existing = await self._existing_lot(scraped)
-        if existing is None:
-            lot = self._build_lot(scraped)
-            self.session.add(lot)
-            await self.session.flush()
-            for image in self._build_images(lot.id, scraped):
-                self.session.add(image)
-            return True
-
+    async def _update_existing_lot(self, existing: AuctionLot, scraped: ScrapedAuctionLot) -> bool:
         preserve_existing_detail = (
             scraped.detail_scraped_at is None and existing.detail_scraped_at is not None
         )
-        preserve_when_missing = {
-            "bid_count",
-            "vin",
-            "mileage",
-            "exterior_color",
-            "interior_color",
-            "transmission",
-            "drivetrain",
-            "engine",
-            "body_style",
-            "location",
-            "seller",
-            "vehicle_details",
-            "detail_payload",
-            "detail_html",
-            "detail_scraped_at",
-        }
         for key, value in self._lot_values(scraped).items():
-            if preserve_existing_detail and key in preserve_when_missing:
+            if preserve_existing_detail and key in _PRESERVE_EXISTING_DETAIL_FIELDS:
                 if value is None or value == {}:
                     continue
                 if key == "vehicle_details":
@@ -128,6 +108,29 @@ class ScraperPersistenceMixin:
                 self.session.add(image)
         self.records_updated += 1
         return False
+
+    async def save_lot(self, scraped: ScrapedAuctionLot) -> bool:
+        """Insert or update an auction lot. Returns True for a newly inserted lot."""
+        existing = await self._existing_lot(scraped)
+        if existing is not None:
+            return await self._update_existing_lot(existing, scraped)
+
+        nested_transaction = await self.session.begin_nested()
+        try:
+            lot = self._build_lot(scraped)
+            self.session.add(lot)
+            await self.session.flush()
+            for image in self._build_images(lot.id, scraped):
+                self.session.add(image)
+        except IntegrityError:
+            await nested_transaction.rollback()
+            existing_after_race = await self._existing_lot(scraped)
+            if existing_after_race is None:
+                raise
+            return await self._update_existing_lot(existing_after_race, scraped)
+        else:
+            await nested_transaction.commit()
+            return True
 
     def _lot_key(self, scraped: ScrapedAuctionLot) -> str:
         if scraped.source_auction_id:

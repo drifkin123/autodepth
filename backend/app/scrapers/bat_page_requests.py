@@ -18,6 +18,11 @@ from app.settings import settings
 class BringATrailerPageRequestMixin:
     """Retry helpers for BaT model/completed-results pages."""
 
+    async def _wait_for_list_rate_limit(self) -> None:
+        limiter = getattr(self, "_list_rate_limiter", None)
+        if limiter is not None:
+            await limiter.wait()
+
     async def _fetch_page_with_retries(
         self,
         client: httpx.AsyncClient,
@@ -32,6 +37,7 @@ class BringATrailerPageRequestMixin:
         for attempt in range(1, _RETRY_POLICY.max_attempts + 1):
             started = time.perf_counter()
             try:
+                await self._wait_for_list_rate_limit()
                 if page == 1:
                     return await fetch_page_result(client, url_path)
                 return await fetch_completed_results_page(

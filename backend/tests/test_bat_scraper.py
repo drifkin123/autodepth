@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -667,6 +668,56 @@ async def test_bat_fetches_show_more_completed_result_pages(
 
     assert [lot.source_auction_id for lot in lots] == ["108526570", "108526571"]
     mock_fetch_completed_results_page.assert_awaited_once()
+
+
+@patch("app.scrapers.bat_detail_requests.fetch_detail_html", new_callable=AsyncMock)
+async def test_bat_list_only_mode_persists_without_detail_enrichment(
+    mock_fetch_detail_html: AsyncMock,
+) -> None:
+    lot, reason = parse_item(SOLD_ITEM)
+    assert lot is not None
+    assert reason == ""
+
+    scraper = BringATrailerScraper(AsyncMock(), skip_details=True)
+    scraper.current_run_id = uuid.uuid4()
+    scraper.persist_lots = AsyncMock()  # type: ignore[method-assign]
+    scraper._enrich_lots_with_details = AsyncMock(return_value=[])  # type: ignore[method-assign]
+
+    await scraper._persist_page_and_details(
+        AsyncMock(),
+        [lot],
+        label="Porsche",
+        page_number=1,
+    )
+
+    scraper.persist_lots.assert_awaited_once_with([lot], context="Porsche page 1")
+    scraper._enrich_lots_with_details.assert_not_awaited()
+    mock_fetch_detail_html.assert_not_awaited()
+
+
+@patch("app.scrapers.bat_page_requests.fetch_page_result", new_callable=AsyncMock)
+async def test_bat_page_request_uses_shared_rate_limiter(
+    mock_fetch_page_result: AsyncMock,
+) -> None:
+    class CountingLimiter:
+        def __init__(self) -> None:
+            self.wait_count = 0
+
+        async def wait(self) -> None:
+            self.wait_count += 1
+
+    limiter = CountingLimiter()
+    mock_fetch_page_result.return_value = ([SOLD_ITEM], {"pages_total": 1})
+    scraper = BringATrailerScraper(AsyncMock(), list_rate_limiter=limiter)
+
+    result = await scraper._fetch_page_with_retries(
+        AsyncMock(),
+        label="Porsche",
+        url_path="porsche",
+    )
+
+    assert result == ([SOLD_ITEM], {"pages_total": 1})
+    assert limiter.wait_count == 1
 
 
 @patch("app.scrapers.bat_page_processing.asyncio.sleep", new_callable=AsyncMock)

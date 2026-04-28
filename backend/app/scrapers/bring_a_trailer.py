@@ -1,7 +1,6 @@
 """Bring a Trailer scraper orchestration."""
 
 import asyncio
-import time
 
 import httpx
 
@@ -16,18 +15,17 @@ from app.scrapers.bat_http import (
     fetch_detail_html,
     fetch_page_result,
 )
-from app.scrapers.bat_list_fields import parse_integer_value
 from app.scrapers.bat_list_parser import SOURCE
 from app.scrapers.bat_model_loading import BringATrailerModelLoadingMixin
 from app.scrapers.bat_page_processing import BringATrailerPageProcessingMixin
 from app.scrapers.bat_requests import BringATrailerRequestMixin
+from app.scrapers.bat_target_processing import BringATrailerTargetProcessingMixin
 from app.scrapers.bat_targets import (
     extract_model_entries_from_html,
     get_all_url_keys,
     get_url_entries,
 )
 from app.scrapers.makes import BAT_MAKES
-from app.scrapers.runtime import BlockedScrapeError
 from app.scrapers.types import ScrapedAuctionLot
 
 __all__ = [
@@ -45,6 +43,7 @@ __all__ = [
 class BringATrailerScraper(
     BringATrailerRequestMixin,
     BringATrailerModelLoadingMixin,
+    BringATrailerTargetProcessingMixin,
     BringATrailerPageProcessingMixin,
     BaseScraper,
 ):
@@ -54,6 +53,8 @@ class BringATrailerScraper(
     def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         self._selected_keys: set[str] | None = kwargs.pop("selected_keys", None)
         self._cancel_event: asyncio.Event | None = kwargs.pop("cancel_event", None)
+        self._skip_details: bool = kwargs.pop("skip_details", False)
+        self._list_rate_limiter = kwargs.pop("list_rate_limiter", None)
         super().__init__(*args, **kwargs)
 
     def _is_cancelled(self) -> bool:
@@ -89,7 +90,7 @@ class BringATrailerScraper(
                 {"total_urls": len(urls), "selected_keys": [k for k, _, _ in urls]},
             )
 
-            for i, (key, label, url_path) in enumerate(urls, 1):
+            for i, target in enumerate(urls, 1):
                 if self._is_cancelled():
                     await self._emit(
                         "warning",
@@ -97,90 +98,14 @@ class BringATrailerScraper(
                     )
                     break
 
-                await self._emit(
-                    "progress",
-                    f"[{i}/{len(urls)}] Fetching: {label}...",
-                    {"label": label, "key": key, "term_index": i, "total_terms": len(urls)},
-                )
-
-                try:
-                    started = time.perf_counter()
-                    result = await self._fetch_page_with_retries(
-                        client,
-                        label=label,
-                        url_path=url_path,
-                    )
-                except BlockedScrapeError as exc:
-                    await self._emit("error", f"[{i}/{len(urls)}] {label}: blocked - {exc}")
-                    raise
-                if result is None:
-                    await self._emit("error", f"[{i}/{len(urls)}] {label}: request failed")
-                    continue
-
-                items, page_metadata = result
-                new_count, dup_count, skip_counts, page_lots = await self._parse_page_items(
-                    items,
+                await self._process_target(
+                    client,
+                    target=target,
+                    index=i,
+                    total_urls=len(urls),
                     seen_urls=seen_urls,
                     all_lots=all_lots,
                 )
-                pages_total = parse_integer_value(page_metadata.get("pages_total")) or 1
-                items_total = page_metadata.get("items_total")
-                items_per_page = (
-                    parse_integer_value(page_metadata.get("items_per_page")) or len(items) or 24
-                )
-                base_filter = page_metadata.get("base_filter") or {}
-                page_limit = self._completed_page_limit(pages_total)
-
-                await self._record_initial_page_telemetry(
-                    key=key,
-                    label=label,
-                    url_path=url_path,
-                    started=started,
-                    items=items,
-                    new_count=new_count,
-                    dup_count=dup_count,
-                    skip_counts=skip_counts,
-                    page_metadata=page_metadata,
-                    page_limit=page_limit,
-                )
-                await self._emit_page_summary(
-                    label=label,
-                    index=i,
-                    total_urls=len(urls),
-                    page_number=1,
-                    pages_total=pages_total,
-                    raw_count=len(items),
-                    new_count=new_count,
-                    dup_count=dup_count,
-                    skip_counts=skip_counts,
-                    run_total=len(all_lots),
-                    items_total=items_total,
-                )
-                await self._persist_page_and_details(
-                    client,
-                    page_lots,
-                    label=label,
-                    page_number=1,
-                )
-
-                for page_number in range(2, page_limit + 1):
-                    should_continue = await self._process_completed_results_page(
-                        client,
-                        key=key,
-                        label=label,
-                        url_path=url_path,
-                        page_number=page_number,
-                        page_limit=page_limit,
-                        pages_total=pages_total,
-                        base_filter=base_filter,
-                        items_per_page=items_per_page,
-                        seen_urls=seen_urls,
-                        all_lots=all_lots,
-                        index=i,
-                        total_urls=len(urls),
-                    )
-                    if not should_continue:
-                        break
 
                 if i < len(urls):
                     await asyncio.sleep(_target_delay_seconds())
