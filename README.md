@@ -76,6 +76,14 @@ From `backend/`:
 uv run python scripts/run_scraper.py --source bring_a_trailer --mode incremental
 uv run python scripts/run_scraper.py --source cars_and_bids --mode backfill
 uv run python scripts/run_scraper.py --mode incremental
+
+# Concurrent BaT backfill, list/API results only by default
+uv run python scripts/run_scraper.py \
+  --source bring_a_trailer \
+  --mode backfill \
+  --concurrent \
+  --workers 3 \
+  --bat-target-source models
 ```
 
 CLI runs emit one structured line per request/page with outcome, status,
@@ -88,6 +96,12 @@ a `bat_pagination_incomplete` anomaly.
 
 Supported modes are `incremental` and `backfill`. The mode is recorded on each
 scrape run and can be used by scrapers/checkpoint logic.
+
+Concurrent BaT backfills use a single in-process queue, one database session per
+worker, and one shared polite request limiter. Proxy/VPN fan-out is intentionally
+not implemented; future proxy support should route through an approved outbound
+proxy while preserving the same global limiter rather than bypassing source
+rate limits or block responses.
 
 Default schedule settings are nightly incremental at `15 3 * * *` and weekly
 reconciliation at `30 4 * * 0`. Request logs are retained for 90 days by

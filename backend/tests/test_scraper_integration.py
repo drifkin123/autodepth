@@ -8,14 +8,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.db import Base
 from app.models.auction_lot import AuctionLot
 from app.models.crawl_state import CrawlState
 from app.models.scrape_anomaly import ScrapeAnomaly
 from app.models.scrape_run import ScrapeRun
 from app.scrapers.base import BaseScraper, ScrapedAuctionLot
+from tests.conftest import TEST_DATABASE_URL
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -25,6 +28,18 @@ class _TestScraper(BaseScraper):
 
     async def scrape(self) -> list[ScrapedAuctionLot]:  # pragma: no cover
         return []
+
+
+class _TwoPartyBarrier:
+    def __init__(self) -> None:
+        self.count = 0
+        self.event = asyncio.Event()
+
+    async def wait(self) -> None:
+        self.count += 1
+        if self.count >= 2:
+            self.event.set()
+        await self.event.wait()
 
 
 async def _count_lots(session: AsyncSession) -> int:
@@ -393,3 +408,60 @@ class TestPipelineBehavior:
         lots = await _all_lots(integration_session)
         assert inserted == 2
         assert {lot.source for lot in lots} == {"bring_a_trailer", "cars_and_bids"}
+
+    async def test_concurrent_duplicate_save_lot_recovers_after_unique_race(self) -> None:
+        engine = create_async_engine(TEST_DATABASE_URL, echo=False)
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+        except (OperationalError, Exception) as exc:
+            await engine.dispose()
+            pytest.skip(f"Integration test DB unavailable — start docker-compose: {exc}")
+
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        barrier = _TwoPartyBarrier()
+        lot = ScrapedAuctionLot(
+            source="bring_a_trailer",
+            source_auction_id="duplicate-race-1",
+            canonical_url="https://bringatrailer.com/listing/duplicate-race-1/",
+            auction_status="sold",
+            sold_price=100_000,
+            high_bid=100_000,
+            bid_count=10,
+        )
+
+        class RacingScraper(_TestScraper):
+            async def _existing_lot(self, scraped: ScrapedAuctionLot) -> AuctionLot | None:
+                existing = await super()._existing_lot(scraped)
+                if existing is None:
+                    await barrier.wait()
+                return existing
+
+        async def save_one() -> bool:
+            async with factory() as session:
+                scraper = RacingScraper(session)
+                inserted = await scraper.save_lot(lot)
+                await session.commit()
+                return inserted
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(save_one(), save_one()),
+                timeout=10,
+            )
+            async with factory() as session:
+                result = await session.execute(select(func.count()).select_from(AuctionLot))
+                lot_count = result.scalar_one()
+        finally:
+            async with factory() as session:
+                await session.execute(
+                    text(
+                        "TRUNCATE TABLE scrape_request_logs, scrape_anomalies, auction_images, "
+                        "auction_lots, scrape_runs, crawl_state RESTART IDENTITY CASCADE"
+                    )
+                )
+                await session.commit()
+            await engine.dispose()
+
+        assert sorted(results) == [False, True]
+        assert lot_count == 1

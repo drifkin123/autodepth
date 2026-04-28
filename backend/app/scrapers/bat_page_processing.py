@@ -64,6 +64,8 @@ class BringATrailerPageProcessingMixin(BringATrailerPageTelemetryMixin):
         if self.current_run_id is None:
             return
         await self.persist_lots(page_lots, context=f"{label} page {page_number}")
+        if getattr(self, "_skip_details", False):
+            return
         enriched_lots = await self._enrich_lots_with_details(
             client,
             page_lots,
