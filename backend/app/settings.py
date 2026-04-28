@@ -5,6 +5,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     database_url: str = "postgresql+asyncpg://autodepth:autodepth@localhost:5432/autodepth"
+    redis_url: str = "redis://localhost:6379/0"
+    raw_page_artifact_backend: str = "local"
+    raw_page_storage_dir: str = "data/raw_pages"
     scrape_schedule: str = "15 3 * * *"
     weekly_reconciliation_schedule: str = "30 4 * * 0"
     request_log_retention_days: int = 90

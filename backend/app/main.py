@@ -6,7 +6,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import admin, market
+from app.api import admin, admin_raw_pages, market
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(admin.router, prefix="/api")
+app.include_router(admin_raw_pages.router, prefix="/api")
 app.include_router(market.router, prefix="/api")
 
 
